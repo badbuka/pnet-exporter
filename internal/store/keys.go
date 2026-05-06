@@ -45,7 +45,6 @@ type protocolKey struct {
 	destination       string
 	actualDestination string
 	status            string
-	method            string
 }
 
 type protocolDurationKey struct {

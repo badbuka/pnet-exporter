@@ -8,6 +8,14 @@ func TestDefaultConfigValidates(t *testing.T) {
 	}
 }
 
+func TestDefaultIsIndependentOfEnvironment(t *testing.T) {
+	t.Setenv("PNET_LISTEN_ADDRESS", "0.0.0.0:1234")
+	cfg := Default()
+	if cfg.ListenAddress != ":9108" {
+		t.Fatalf("Default() must ignore env, got %q", cfg.ListenAddress)
+	}
+}
+
 func TestLoadOverridesFromEnvironment(t *testing.T) {
 	t.Setenv("PNET_LISTEN_ADDRESS", "127.0.0.1:9999")
 	t.Setenv("PNET_FEATURE_LATENCY", "true")
@@ -38,5 +46,13 @@ func TestLoadRejectsInvalidBuckets(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid bucket error")
+	}
+}
+
+func TestLoadRejectsUnknownLogLevel(t *testing.T) {
+	t.Setenv("PNET_LOG_LEVEL", "verbose")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected unknown log level error")
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -103,8 +104,46 @@ func (d *Discoverer) inspect(ctx context.Context, id string) (identity.Container
 	}
 	container.NetNSInode = namespaceInode(container.PID, "net")
 	container.MountNSInode = namespaceInode(container.PID, "mnt")
-	container.CgroupID = statInode(fmt.Sprintf("/proc/%d/cgroup", container.PID))
+	container.CgroupID = cgroupID(container.PID, container.CgroupPath)
 	return container, nil
+}
+
+// cgroupID returns the cgroup-v2 directory inode for the container, which
+// is the same value that BPF programs receive from
+// `bpf_get_current_cgroup_id()`. Lookup proceeds in two stages:
+//
+//  1. If Podman reported a cgroup path, stat /sys/fs/cgroup/<path>.
+//  2. Otherwise, parse /proc/<pid>/cgroup, take the unified
+//     "0::/<path>" line, and stat /sys/fs/cgroup/<path>.
+func cgroupID(pid int, reportedPath string) uint64 {
+	const root = "/sys/fs/cgroup"
+
+	if reportedPath != "" {
+		if id := statInode(filepath.Join(root, reportedPath)); id != 0 {
+			return id
+		}
+	}
+	if pid <= 0 {
+		return 0
+	}
+
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		// cgroup-v2 lines have the form "0::/some/path".
+		if !strings.HasPrefix(line, "0::") {
+			continue
+		}
+		path := strings.TrimPrefix(line, "0::")
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		return statInode(filepath.Join(root, path))
+	}
+	return 0
 }
 
 type psRow struct {

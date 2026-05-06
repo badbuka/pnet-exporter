@@ -11,12 +11,12 @@ int handle_tcp_retransmit_skb(struct trace_event_raw_tcp_event_sk_skb *ctx)
 	if (!event)
 		return 0;
 
-	event->kind = 5;
+	event->kind = PNET_EVENT_TCP_RETRANSMIT;
 	event->cgroup_id = current_cgroup_id();
 	event->pid = bpf_get_current_pid_tgid() >> 32;
 	event->tuple.family = ctx->family;
-	event->tuple.sport = ctx->sport;
-	event->tuple.dport = ctx->dport;
+	event->tuple.sport = bpf_ntohs(ctx->sport);
+	event->tuple.dport = bpf_ntohs(ctx->dport);
 	__builtin_memcpy(event->tuple.saddr, ctx->saddr, sizeof(ctx->saddr));
 	__builtin_memcpy(event->tuple.daddr, ctx->daddr, sizeof(ctx->daddr));
 	event->value = 1;

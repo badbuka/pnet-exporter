@@ -127,6 +127,19 @@ func (c *Cache) Snapshot() []Container {
 	return containers
 }
 
+// LiveContainerIDs returns the set of container IDs currently known to the
+// cache. The returned map is owned by the caller and is safe to mutate.
+func (c *Cache) LiveContainerIDs() map[string]struct{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	ids := make(map[string]struct{}, len(c.byID))
+	for id := range c.byID {
+		ids[id] = struct{}{}
+	}
+	return ids
+}
+
 func (c *Cache) LabelsFor(containerID string) Labels {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

@@ -1,100 +1,118 @@
 package ebpf
 
 import (
-	"context"
-	"errors"
 	"log/slog"
-	"os"
-	"path/filepath"
 
 	"pnet-exporter/internal/config"
 	"pnet-exporter/internal/identity"
 	"pnet-exporter/internal/store"
-
-	ciliumebpf "github.com/cilium/ebpf"
 )
 
+// programDescriptor describes one compiled BPF object: the file name, the
+// program name inside it, and the (group, name) tracepoint it should be
+// attached to.
+type programDescriptor struct {
+	Object       string
+	Program      string
+	TracepointTP string // "group/name", e.g. "sock/inet_sock_set_state"
+}
+
+// programs is the canonical list of BPF programs the loader ships.
+//
+// New programs added here must:
+//  1. live in bpf/<Object>.c, building to <Object>.o,
+//  2. expose a function with `SEC("tracepoint/<TracepointTP>")`,
+//  3. push events through the shared `events` ring buffer.
+var programs = []programDescriptor{
+	{
+		Object:       "tcp_state.bpf.o",
+		Program:      "handle_inet_sock_set_state",
+		TracepointTP: "sock/inet_sock_set_state",
+	},
+	{
+		Object:       "tcp_retransmit.bpf.o",
+		Program:      "handle_tcp_retransmit_skb",
+		TracepointTP: "tcp/tcp_retransmit_skb",
+	},
+}
+
+// Loader manages the lifecycle of all BPF programs, attached links, and
+// the ring-buffer reader that consumes their events. The actual kernel
+// interactions live in platform-specific files (loader_linux.go); on other
+// platforms only a stub implementation is provided so the rest of the
+// project can be built and unit-tested.
 type Loader struct {
 	cfg      config.EBPFConfig
 	identity *identity.Cache
 	store    *store.Store
 	logger   *slog.Logger
-	objects  []*ciliumebpf.Collection
+
+	state loaderState
 }
 
 func NewLoader(cfg config.EBPFConfig, identity *identity.Cache, store *store.Store, logger *slog.Logger) *Loader {
 	return &Loader{cfg: cfg, identity: identity, store: store, logger: logger}
 }
 
-func (l *Loader) Start(_ context.Context) error {
-	objects := []string{
-		"tcp_state.bpf.o",
-		"tcp_retransmit.bpf.o",
-		"tcp_bytes.bpf.o",
-		"sys_connect.bpf.o",
-		"protocols.bpf.o",
-	}
-
-	for _, name := range objects {
-		path := filepath.Join(l.cfg.BPFDir, name)
-		if _, err := os.Stat(path); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				l.logger.Warn("compiled eBPF object is missing; collector will stay idle", "path", path)
-				continue
-			}
-			return err
-		}
-		spec, err := ciliumebpf.LoadCollectionSpec(path)
-		if err != nil {
-			return err
-		}
-		collection, err := ciliumebpf.NewCollection(spec)
-		if err != nil {
-			return err
-		}
-		l.objects = append(l.objects, collection)
-	}
-
-	l.logger.Info("eBPF loader started", "objects", len(l.objects))
-	return nil
-}
-
-func (l *Loader) Close() {
-	for _, object := range l.objects {
-		object.Close()
-	}
-}
-
-func (l *Loader) IngestTCPEvent(event TCPEvent) {
-	tcpEvent := store.TCPEvent{
-		Container: event.Container,
-		Endpoint: store.Endpoint{
-			Destination:       event.Tuple.Destination(),
-			ActualDestination: event.ActualDestination,
-		},
-		Bytes: event.Value,
-		Value: float64(event.Value),
-	}
+func (l *Loader) dispatch(event TCPEvent) {
+	container := l.resolveContainer(event)
+	storeEvent := event.ToStoreEvent(container)
 
 	switch event.Kind {
 	case EventTCPListen:
 		l.store.ObserveListen(store.ListenEndpoint{
-			Container:  event.Container,
+			Container:  container,
 			ListenAddr: event.Tuple.Destination(),
 			Proxy:      "false",
 			Value:      1,
 		})
 	case EventTCPSuccessfulConnect:
-		l.store.IncSuccessfulConnect(tcpEvent)
+		l.store.IncSuccessfulConnect(storeEvent)
 	case EventTCPFailedConnect:
-		l.store.IncFailedConnect(tcpEvent)
+		l.store.IncFailedConnect(storeEvent)
 	case EventTCPActiveConnections:
-		l.store.SetActiveConnections(tcpEvent)
+		l.store.SetActiveConnections(storeEvent)
 	case EventTCPRetransmit:
-		l.store.IncRetransmit(tcpEvent)
+		l.store.IncRetransmit(storeEvent)
 	case EventTCPBytesSent:
-		l.store.AddBytesSent(tcpEvent)
+		l.store.AddBytesSent(storeEvent)
 	case EventTCPBytesReceived:
-		l.store.AddBytesReceived(tcpEvent)
+		l.store.AddBytesReceived(storeEvent)
+	default:
+		l.logger.Debug("unhandled BPF event kind", "kind", uint8(event.Kind))
 	}
+}
+
+// resolveContainer maps a BPF event back to a container by cgroup id (the
+// strongest signal) or by PID as a fallback. When neither lookup hits the
+// returned labels are empty so the metric is still emitted.
+func (l *Loader) resolveContainer(event TCPEvent) store.ContainerLabels {
+	if event.CgroupID != 0 {
+		if container, ok := l.identity.ByCgroupID(event.CgroupID); ok {
+			return toLabels(container)
+		}
+	}
+	if event.PID != 0 {
+		if container, ok := l.identity.ByPID(int(event.PID)); ok {
+			return toLabels(container)
+		}
+	}
+	return store.ContainerLabels{}
+}
+
+func toLabels(c identity.Container) store.ContainerLabels {
+	return store.ContainerLabels{
+		ContainerID:   c.ID,
+		ContainerName: c.Name,
+		PodID:         c.PodID,
+	}
+}
+
+func splitTracepoint(tp string) (group, name string, ok bool) {
+	for i := 0; i < len(tp); i++ {
+		if tp[i] == '/' {
+			return tp[:i], tp[i+1:], i > 0 && i < len(tp)-1
+		}
+	}
+	return "", "", false
 }

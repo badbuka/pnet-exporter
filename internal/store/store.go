@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -12,6 +11,21 @@ import (
 
 const overflowLabel = "~other"
 
+// Store holds all metric series in memory between Prometheus scrapes.
+//
+// Series are partitioned into two TTL classes:
+//
+//   - Counters and listen-state gauges keep their last published value
+//     forever (or until the container is forgotten). This preserves counter
+//     monotonicity across idle periods, since Prometheus interprets a value
+//     decrease as a counter reset.
+//   - Stateful samples (active connections, latency, IP→FQDN mappings,
+//     histograms) age out via MetricTTL because they describe a momentary
+//     condition rather than an accumulating count.
+//
+// Container-keyed cardinality bookkeeping (the *Seen maps) is dropped when
+// a container ID is forgotten via ForgetContainer, called by the janitor
+// after consulting the identity cache.
 type Store struct {
 	mu sync.RWMutex
 
@@ -33,7 +47,6 @@ type Store struct {
 
 	destinationSeen map[string]map[string]struct{}
 	fqdnSeen        map[string]map[string]struct{}
-	protocolSeen    map[string]map[string]struct{}
 }
 
 func New(cfg config.StoreConfig) *Store {
@@ -54,11 +67,17 @@ func New(cfg config.StoreConfig) *Store {
 		protocolDur:     make(map[protocolDurationKey]histogramValue),
 		destinationSeen: make(map[string]map[string]struct{}),
 		fqdnSeen:        make(map[string]map[string]struct{}),
-		protocolSeen:    make(map[string]map[string]struct{}),
 	}
 }
 
-func (s *Store) RunJanitor(ctx context.Context, interval time.Duration) {
+// LiveContainersFunc returns the set of container IDs currently known to
+// the identity cache. The janitor uses it to drop bookkeeping for
+// containers that have disappeared.
+type LiveContainersFunc func() map[string]struct{}
+
+// RunJanitor prunes momentary metric series and per-container bookkeeping
+// for containers no longer present in liveContainers.
+func (s *Store) RunJanitor(ctx context.Context, interval time.Duration, liveContainers LiveContainersFunc) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -66,7 +85,7 @@ func (s *Store) RunJanitor(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.Prune(time.Now())
+			s.Prune(time.Now(), liveContainers)
 		}
 	}
 }
@@ -161,14 +180,12 @@ func (s *Store) ObserveProtocol(event ProtocolEvent) {
 		Destination:       s.boundDestination(event.Container.ContainerID, event.Endpoint.Destination),
 		ActualDestination: s.boundDestination(event.Container.ContainerID, event.Endpoint.ActualDestination),
 	}
-	_ = s.boundProtocolKey(event.Container.ContainerID, fmt.Sprintf("%s:%s", event.Protocol, event.Method), event.Method)
 	key := protocolKey{
 		protocol:          event.Protocol,
 		container:         event.Container,
 		destination:       endpoint.Destination,
 		actualDestination: endpoint.ActualDestination,
 		status:            event.Status,
-		method:            "",
 	}
 	s.protocol[key] = seriesValue{value: s.protocol[key].value + 1, updatedAt: time.Now()}
 
@@ -242,7 +259,6 @@ func (s *Store) Snapshot() Snapshot {
 			Destination:       key.destination,
 			ActualDestination: key.actualDestination,
 			Status:            key.status,
-			Method:            key.method,
 			Value:             value.value,
 		})
 	}
@@ -260,23 +276,83 @@ func (s *Store) Snapshot() Snapshot {
 	return snapshot
 }
 
-func (s *Store) Prune(now time.Time) {
+// Prune drops momentary samples older than MetricTTL and forgets
+// per-container bookkeeping for containers that liveContainers no longer
+// reports. Counter series are kept so Prometheus does not perceive their
+// disappearance as a counter reset.
+func (s *Store) Prune(now time.Time, liveContainers LiveContainersFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	pruneSeries(s.listens, now, s.cfg.MetricTTL)
-	pruneSeries(s.successful, now, s.cfg.MetricTTL)
-	pruneSeries(s.failed, now, s.cfg.MetricTTL)
-	pruneSeries(s.retransmits, now, s.cfg.MetricTTL)
 	pruneSeries(s.active, now, s.cfg.MetricTTL)
-	pruneSeries(s.bytesSent, now, s.cfg.MetricTTL)
-	pruneSeries(s.bytesReceived, now, s.cfg.MetricTTL)
 	pruneSeries(s.latency, now, s.cfg.MetricTTL)
-	pruneSeries(s.dnsRequests, now, s.cfg.MetricTTL)
 	pruneSeries(s.ipToFQDN, now, s.cfg.MetricTTL)
-	pruneSeries(s.protocol, now, s.cfg.MetricTTL)
 	pruneHistograms(s.dnsDurations, now, s.cfg.MetricTTL)
 	pruneHistograms(s.protocolDur, now, s.cfg.MetricTTL)
+
+	if liveContainers == nil {
+		return
+	}
+	live := liveContainers()
+	if live == nil {
+		return
+	}
+
+	dropContainer := func(id string) bool {
+		_, ok := live[id]
+		return !ok
+	}
+
+	for k := range s.listens {
+		if dropContainer(k.container.ContainerID) {
+			delete(s.listens, k)
+		}
+	}
+	for k := range s.successful {
+		if dropContainer(k.container.ContainerID) {
+			delete(s.successful, k)
+		}
+	}
+	for k := range s.failed {
+		if dropContainer(k.container.ContainerID) {
+			delete(s.failed, k)
+		}
+	}
+	for k := range s.retransmits {
+		if dropContainer(k.container.ContainerID) {
+			delete(s.retransmits, k)
+		}
+	}
+	for k := range s.bytesSent {
+		if dropContainer(k.container.ContainerID) {
+			delete(s.bytesSent, k)
+		}
+	}
+	for k := range s.bytesReceived {
+		if dropContainer(k.container.ContainerID) {
+			delete(s.bytesReceived, k)
+		}
+	}
+	for k := range s.dnsRequests {
+		if dropContainer(k.container.ContainerID) {
+			delete(s.dnsRequests, k)
+		}
+	}
+	for k := range s.protocol {
+		if dropContainer(k.container.ContainerID) {
+			delete(s.protocol, k)
+		}
+	}
+	for id := range s.destinationSeen {
+		if dropContainer(id) {
+			delete(s.destinationSeen, id)
+		}
+	}
+	for id := range s.fqdnSeen {
+		if dropContainer(id) {
+			delete(s.fqdnSeen, id)
+		}
+	}
 }
 
 func (s *Store) incEndpoint(values map[endpointKey]seriesValue, key endpointKey, delta float64) {
@@ -301,13 +377,6 @@ func (s *Store) boundDestination(containerID, destination string) string {
 
 func (s *Store) boundFQDN(containerID, fqdn string) string {
 	return s.boundValue(s.fqdnSeen, containerID, fqdn, s.cfg.FQDNCeiling)
-}
-
-func (s *Store) boundProtocolKey(containerID, unique, value string) string {
-	if s.boundValue(s.protocolSeen, containerID, unique, s.cfg.ProtocolKeyLimit) == overflowLabel {
-		return overflowLabel
-	}
-	return value
 }
 
 func (s *Store) boundValue(seen map[string]map[string]struct{}, containerID, value string, limit int) string {

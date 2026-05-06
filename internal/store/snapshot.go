@@ -70,7 +70,6 @@ type ProtocolSeries struct {
 	Destination       string
 	ActualDestination string
 	Status            string
-	Method            string
 	Value             float64
 }
 

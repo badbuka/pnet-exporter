@@ -60,7 +60,6 @@ type ProtocolEvent struct {
 	Container ContainerLabels
 	Endpoint  Endpoint
 	Status    string
-	Method    string
 	Duration  time.Duration
 }
 

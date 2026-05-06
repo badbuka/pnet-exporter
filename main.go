@@ -23,12 +23,15 @@ import (
 )
 
 func main() {
+	bootstrapLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
 	cfg, err := config.Load()
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	if err != nil {
-		logger.Error("load configuration", "error", err)
+		bootstrapLogger.Error("load configuration", "error", err)
 		os.Exit(1)
 	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 
 	if err := run(cfg, logger); err != nil {
 		logger.Error("exporter stopped", "error", err)
@@ -39,10 +42,6 @@ func main() {
 func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
 
 	checks := ebpf.CheckKernelSupport(cfg.SysFS)
 	for _, check := range checks {
@@ -78,7 +77,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 
 	go runDiscoveryLoop(ctx, cfg, discoverer, identityCache, logger)
-	go metricStore.RunJanitor(ctx, cfg.Store.CleanupInterval)
+	go metricStore.RunJanitor(ctx, cfg.Store.CleanupInterval, identityCache.LiveContainerIDs)
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(

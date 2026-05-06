@@ -4,3 +4,4 @@
 docs/
 test/
 bpf/*.bpf.o
+bpf/vmlinux.h

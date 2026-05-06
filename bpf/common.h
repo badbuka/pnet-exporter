@@ -6,6 +6,8 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
+#include "events.h"
+
 #define AF_INET_VALUE 2
 #define AF_INET6_VALUE 10
 

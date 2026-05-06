@@ -58,3 +58,50 @@ func TestStoreProducesHistogramBuckets(t *testing.T) {
 		t.Fatalf("unexpected buckets: %#v", hist.Buckets)
 	}
 }
+
+func TestPruneDropsOnlyMomentarySeriesByTTL(t *testing.T) {
+	cfg := config.Default().Store
+	cfg.MetricTTL = time.Millisecond
+	store := New(cfg)
+	labels := ContainerLabels{ContainerID: "c1"}
+
+	store.IncSuccessfulConnect(TCPEvent{Container: labels, Endpoint: Endpoint{Destination: "10.0.0.1:80"}})
+	store.SetActiveConnections(TCPEvent{Container: labels, Endpoint: Endpoint{Destination: "10.0.0.1:80"}, Value: 3})
+
+	live := func() map[string]struct{} { return map[string]struct{}{"c1": {}} }
+	store.Prune(time.Now().Add(time.Second), live)
+
+	snap := store.Snapshot()
+	if len(snap.Successful) != 1 {
+		t.Fatalf("counter must survive TTL prune, got %d series", len(snap.Successful))
+	}
+	if len(snap.Active) != 0 {
+		t.Fatalf("active gauge must expire by TTL, got %d series", len(snap.Active))
+	}
+}
+
+func TestPruneDropsAllSeriesAndBookkeepingForVanishedContainer(t *testing.T) {
+	cfg := config.Default().Store
+	cfg.MetricTTL = time.Hour
+	store := New(cfg)
+
+	store.IncSuccessfulConnect(TCPEvent{
+		Container: ContainerLabels{ContainerID: "c1"},
+		Endpoint:  Endpoint{Destination: "10.0.0.1:80"},
+	})
+
+	if got := len(store.destinationSeen); got != 1 {
+		t.Fatalf("expected destinationSeen to be populated, got %d", got)
+	}
+
+	live := func() map[string]struct{} { return map[string]struct{}{} }
+	store.Prune(time.Now(), live)
+
+	snap := store.Snapshot()
+	if len(snap.Successful) != 0 {
+		t.Fatalf("series for vanished container must be dropped, got %d", len(snap.Successful))
+	}
+	if got := len(store.destinationSeen); got != 0 {
+		t.Fatalf("destinationSeen must be cleaned up, got %d", got)
+	}
+}

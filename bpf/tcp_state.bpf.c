@@ -18,13 +18,13 @@ int handle_inet_sock_set_state(struct trace_event_raw_inet_sock_set_state *ctx)
 	event->tuple.dport = bpf_ntohs(ctx->dport);
 
 	if (ctx->newstate == TCP_ESTABLISHED && ctx->oldstate == TCP_SYN_SENT) {
-		event->kind = 2;
+		event->kind = PNET_EVENT_TCP_SUCCESSFUL_CONNECT;
 		event->value = 1;
 	} else if (ctx->oldstate == TCP_SYN_SENT && ctx->newstate == TCP_CLOSE) {
-		event->kind = 3;
+		event->kind = PNET_EVENT_TCP_FAILED_CONNECT;
 		event->value = 1;
 	} else if (ctx->newstate == TCP_LISTEN) {
-		event->kind = 1;
+		event->kind = PNET_EVENT_TCP_LISTEN;
 		event->value = 1;
 	} else {
 		bpf_ringbuf_discard(event, 0);

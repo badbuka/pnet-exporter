@@ -1,0 +1,21 @@
+#ifndef PNET_EXPORTER_EVENTS_H
+#define PNET_EXPORTER_EVENTS_H
+
+/*
+ * Event kind constants shared between BPF programs and Go user-space.
+ *
+ * The Go side mirrors these in internal/ebpf/events.go. They MUST stay in
+ * sync; gaps in the numbering are reserved for future events.
+ */
+
+#define PNET_EVENT_TCP_LISTEN              1
+#define PNET_EVENT_TCP_SUCCESSFUL_CONNECT  2
+#define PNET_EVENT_TCP_FAILED_CONNECT      3
+#define PNET_EVENT_TCP_ACTIVE_CONNECTIONS  4 /* reserved */
+#define PNET_EVENT_TCP_RETRANSMIT          5
+#define PNET_EVENT_TCP_BYTES_SENT          6
+#define PNET_EVENT_TCP_BYTES_RECEIVED      7
+#define PNET_EVENT_PROTOCOL                8 /* reserved */
+#define PNET_EVENT_DNS                     9 /* reserved */
+
+#endif
