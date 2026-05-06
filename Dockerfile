@@ -6,7 +6,10 @@
 FROM --platform=$BUILDPLATFORM docker.io/library/debian:bookworm-slim AS bpf-builder
 
 ARG TARGETARCH
-ARG LIBBPF_BOOTSTRAP_REF=23d3334cebf3da72c5dab7d5e49aac598e5e9b1b
+# Pin the libbpf/vmlinux.h repository to a known commit so builds stay
+# reproducible. Bump when refreshing kernel types.
+ARG VMLINUX_REPO=https://github.com/libbpf/vmlinux.h.git
+ARG VMLINUX_REF=main
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         clang \
@@ -14,23 +17,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libbpf-dev \
         linux-headers-generic \
         ca-certificates \
-        curl \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
 COPY bpf/ bpf/
 
-# Map Docker's $TARGETARCH to libbpf-bootstrap's vmlinux directory layout
-# and the matching clang -D__TARGET_ARCH_<arch> define.
+# Map Docker's $TARGETARCH to the libbpf/vmlinux.h directory name and to
+# the matching clang -D__TARGET_ARCH_<arch> define. The vmlinux.h files in
+# the upstream repo are symlinks to versioned headers, so we need a real
+# git checkout (rather than `curl`) to resolve them.
 RUN set -eux; \
     case "${TARGETARCH}" in \
-        amd64)  vmlinux_arch=x86;   target_arch=x86 ;; \
-        arm64)  vmlinux_arch=arm64; target_arch=arm64 ;; \
+        amd64)  vmlinux_arch=x86_64;  target_arch=x86 ;; \
+        arm64)  vmlinux_arch=aarch64; target_arch=arm64 ;; \
         *) echo "unsupported TARGETARCH=${TARGETARCH}"; exit 1 ;; \
     esac; \
-    curl -fsSL \
-        "https://raw.githubusercontent.com/libbpf/libbpf-bootstrap/${LIBBPF_BOOTSTRAP_REF}/vmlinux/${vmlinux_arch}/vmlinux.h" \
-        -o bpf/vmlinux.h; \
+    git clone --depth 1 --branch "${VMLINUX_REF}" "${VMLINUX_REPO}" /tmp/vmlinux; \
+    cp -L "/tmp/vmlinux/include/${vmlinux_arch}/vmlinux.h" bpf/vmlinux.h; \
+    rm -rf /tmp/vmlinux; \
     for src in bpf/*.bpf.c; do \
         clang -O2 -g -target bpf "-D__TARGET_ARCH_${target_arch}" \
             -I/usr/include/bpf -Ibpf \
