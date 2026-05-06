@@ -14,7 +14,6 @@ linters:
     - misspell
     - staticcheck
     - unused
-
-issues:
-  exclude-dirs:
-    - bpf
+  exclusions:
+    paths:
+      - bpf
