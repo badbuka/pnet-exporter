@@ -28,7 +28,7 @@ RUN clang -O2 -g -target bpf -D__TARGET_ARCH_x86 \
         -c bpf/protocols.bpf.c      -o bpf/protocols.bpf.o
 
 # Stage 2: build the Go binary
-FROM docker.io/library/golang:1.23-bookworm AS go-builder
+FROM docker.io/library/golang:1.26.2-bookworm AS go-builder
 
 WORKDIR /src
 COPY go.mod go.sum ./

@@ -1,6 +1,6 @@
 module pnet-exporter
 
-go 1.23.0
+go 1.26.2
 
 require (
 	github.com/cilium/ebpf v0.17.3
