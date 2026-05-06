@@ -1,0 +1,6 @@
+.git
+.golangci.yml
+*.md
+docs/
+test/
+bpf/*.bpf.o
