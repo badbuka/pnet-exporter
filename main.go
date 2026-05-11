@@ -12,8 +12,10 @@ import (
 
 	"pnet-exporter/internal/collector"
 	"pnet-exporter/internal/config"
+	"pnet-exporter/internal/delays"
 	"pnet-exporter/internal/ebpf"
 	"pnet-exporter/internal/identity"
+	"pnet-exporter/internal/node"
 	"pnet-exporter/internal/podman"
 	"pnet-exporter/internal/prober"
 	"pnet-exporter/internal/store"
@@ -71,9 +73,14 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		defer loader.Close()
 	}
 
-	latencyProber := prober.New(metricStore, cfg.Latency, logger)
 	if cfg.Features.Latency {
+		latencyProber := prober.New(metricStore, identityCache, cfg.Latency, logger)
 		go latencyProber.Run(ctx)
+	}
+
+	if cfg.Features.DelayAccounting {
+		delayReader := delays.NewReader(cfg.ProcFS, identityCache, metricStore, cfg.Delays.Interval, logger)
+		go delayReader.Run(ctx)
 	}
 
 	go runDiscoveryLoop(ctx, cfg, discoverer, identityCache, logger)
@@ -85,6 +92,16 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		collector.NewProtocolCollector(metricStore),
 		collector.NewBuildCollector(),
 	)
+	if cfg.Features.OOM || cfg.Features.DelayAccounting {
+		reg.MustRegister(collector.NewRuntimeCollector(metricStore))
+	}
+	if cfg.Features.NodeMetrics {
+		hostname, _ := os.Hostname()
+		if hostname == "" {
+			hostname = "unknown"
+		}
+		reg.MustRegister(node.NewCollector(cfg.ProcFS, hostname, logger))
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))

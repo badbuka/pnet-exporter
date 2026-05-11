@@ -68,3 +68,18 @@ type LatencySample struct {
 	DestinationIP string
 	Seconds       float64
 }
+
+// OOMEvent is recorded whenever the kernel OOM killer fires inside a
+// known container.
+type OOMEvent struct {
+	Container ContainerLabels
+	VictimPID uint32
+}
+
+// ResourceDelaySample is the per-container delay-accounting reading
+// (cpu / disk wait time) aggregated from taskstats.
+type ResourceDelaySample struct {
+	Container       ContainerLabels
+	CPUDelaySeconds float64
+	IODelaySeconds  float64
+}

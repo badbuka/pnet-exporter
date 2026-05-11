@@ -44,6 +44,8 @@ type Store struct {
 	ipToFQDN      map[ipFQDNKey]seriesValue
 	protocol      map[protocolKey]seriesValue
 	protocolDur   map[protocolDurationKey]histogramValue
+	oomKills      map[oomKey]seriesValue
+	delays        map[delayKey]delayValue
 
 	destinationSeen map[string]map[string]struct{}
 	fqdnSeen        map[string]map[string]struct{}
@@ -65,6 +67,8 @@ func New(cfg config.StoreConfig) *Store {
 		ipToFQDN:        make(map[ipFQDNKey]seriesValue),
 		protocol:        make(map[protocolKey]seriesValue),
 		protocolDur:     make(map[protocolDurationKey]histogramValue),
+		oomKills:        make(map[oomKey]seriesValue),
+		delays:          make(map[delayKey]delayValue),
 		destinationSeen: make(map[string]map[string]struct{}),
 		fqdnSeen:        make(map[string]map[string]struct{}),
 	}
@@ -119,6 +123,37 @@ func (s *Store) IncRetransmit(event TCPEvent) {
 	s.incEndpoint(s.retransmits, key, 1)
 }
 
+// IncActiveConnection bumps the active-connection gauge for the
+// container/endpoint pair. SuccessfulConnect events drive this from BPF
+// tracepoints.
+func (s *Store) IncActiveConnection(event TCPEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.endpointKey(event.Container, event.Endpoint)
+	v := s.active[key]
+	v.value++
+	v.updatedAt = time.Now()
+	s.active[key] = v
+}
+
+// DecActiveConnection clamps to zero so spurious close events (e.g. a
+// close observed before the matching open has been processed) cannot
+// produce a negative gauge.
+func (s *Store) DecActiveConnection(event TCPEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.endpointKey(event.Container, event.Endpoint)
+	v := s.active[key]
+	if v.value > 0 {
+		v.value--
+	}
+	v.updatedAt = time.Now()
+	s.active[key] = v
+}
+
+// SetActiveConnections directly overwrites the gauge value. Useful for
+// /proc-derived reconciliation that periodically reports an authoritative
+// count.
 func (s *Store) SetActiveConnections(event TCPEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -159,10 +194,12 @@ func (s *Store) ObserveDNS(event DNSEvent) {
 	}
 	s.dnsRequests[key] = seriesValue{value: s.dnsRequests[key].value + 1, updatedAt: time.Now()}
 
-	histKey := dnsDurationKey{container: event.Container}
-	hist := s.dnsDurations[histKey]
-	hist.observe(event.Duration.Seconds(), s.cfg.DNSDurationBuckets)
-	s.dnsDurations[histKey] = hist
+	if event.Duration > 0 {
+		histKey := dnsDurationKey{container: event.Container}
+		hist := s.dnsDurations[histKey]
+		hist.observe(event.Duration.Seconds(), s.cfg.DNSDurationBuckets)
+		s.dnsDurations[histKey] = hist
+	}
 }
 
 func (s *Store) SetIPFQDN(mapping IPFQDNMapping) {
@@ -189,15 +226,43 @@ func (s *Store) ObserveProtocol(event ProtocolEvent) {
 	}
 	s.protocol[key] = seriesValue{value: s.protocol[key].value + 1, updatedAt: time.Now()}
 
-	histKey := protocolDurationKey{
-		protocol:          event.Protocol,
-		container:         event.Container,
-		destination:       endpoint.Destination,
-		actualDestination: endpoint.ActualDestination,
+	if event.Duration > 0 {
+		histKey := protocolDurationKey{
+			protocol:          event.Protocol,
+			container:         event.Container,
+			destination:       endpoint.Destination,
+			actualDestination: endpoint.ActualDestination,
+		}
+		hist := s.protocolDur[histKey]
+		hist.observe(event.Duration.Seconds(), s.cfg.DurationBuckets)
+		s.protocolDur[histKey] = hist
 	}
-	hist := s.protocolDur[histKey]
-	hist.observe(event.Duration.Seconds(), s.cfg.DurationBuckets)
-	s.protocolDur[histKey] = hist
+}
+
+// ObserveOOMKill increments the OOM-kill counter for the container the
+// victim PID belonged to.
+func (s *Store) ObserveOOMKill(event OOMEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := oomKey{container: event.Container}
+	v := s.oomKills[key]
+	v.value++
+	v.updatedAt = time.Now()
+	s.oomKills[key] = v
+}
+
+// RecordResourceDelay stores the latest cumulative delay-accounting
+// counters for a container. Counters are monotonic so callers must pass
+// the kernel's running totals (in seconds).
+func (s *Store) RecordResourceDelay(sample ResourceDelaySample) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := delayKey{container: sample.Container}
+	s.delays[key] = delayValue{
+		cpu:       sample.CPUDelaySeconds,
+		io:        sample.IODelaySeconds,
+		updatedAt: time.Now(),
+	}
 }
 
 func (s *Store) Snapshot() Snapshot {
@@ -218,6 +283,8 @@ func (s *Store) Snapshot() Snapshot {
 		IPToFQDN:      make([]IPFQDNSeries, 0, len(s.ipToFQDN)),
 		Protocol:      make([]ProtocolSeries, 0, len(s.protocol)),
 		ProtocolDur:   make([]ProtocolHistogram, 0, len(s.protocolDur)),
+		OOMKills:      make([]OOMSeries, 0, len(s.oomKills)),
+		Delays:        make([]DelaySeries, 0, len(s.delays)),
 	}
 	for key, value := range s.listens {
 		snapshot.Listens = append(snapshot.Listens, ListenSeries{Container: key.container, ListenAddr: key.listenAddr, Proxy: key.proxy, Value: value.value})
@@ -273,6 +340,16 @@ func (s *Store) Snapshot() Snapshot {
 			Count:             value.count,
 		})
 	}
+	for key, value := range s.oomKills {
+		snapshot.OOMKills = append(snapshot.OOMKills, OOMSeries{Container: key.container, Value: value.value})
+	}
+	for key, value := range s.delays {
+		snapshot.Delays = append(snapshot.Delays, DelaySeries{
+			Container:       key.container,
+			CPUDelaySeconds: value.cpu,
+			IODelaySeconds:  value.io,
+		})
+	}
 	return snapshot
 }
 
@@ -287,6 +364,7 @@ func (s *Store) Prune(now time.Time, liveContainers LiveContainersFunc) {
 	pruneSeries(s.active, now, s.cfg.MetricTTL)
 	pruneSeries(s.latency, now, s.cfg.MetricTTL)
 	pruneSeries(s.ipToFQDN, now, s.cfg.MetricTTL)
+	pruneDelays(s.delays, now, s.cfg.MetricTTL)
 	pruneHistograms(s.dnsDurations, now, s.cfg.MetricTTL)
 	pruneHistograms(s.protocolDur, now, s.cfg.MetricTTL)
 
@@ -341,6 +419,11 @@ func (s *Store) Prune(now time.Time, liveContainers LiveContainersFunc) {
 	for k := range s.protocol {
 		if dropContainer(k.container.ContainerID) {
 			delete(s.protocol, k)
+		}
+	}
+	for k := range s.oomKills {
+		if dropContainer(k.container.ContainerID) {
+			delete(s.oomKills, k)
 		}
 	}
 	for id := range s.destinationSeen {
@@ -408,6 +491,12 @@ type histogramValue struct {
 	updatedAt time.Time
 }
 
+type delayValue struct {
+	cpu       float64
+	io        float64
+	updatedAt time.Time
+}
+
 func (h *histogramValue) observe(value float64, buckets []float64) {
 	if h.buckets == nil {
 		h.buckets = make(map[float64]uint64, len(buckets))
@@ -448,6 +537,14 @@ func pruneSeries[K comparable](values map[K]seriesValue, now time.Time, ttl time
 }
 
 func pruneHistograms[K comparable](values map[K]histogramValue, now time.Time, ttl time.Duration) {
+	for key, value := range values {
+		if now.Sub(value.updatedAt) > ttl {
+			delete(values, key)
+		}
+	}
+}
+
+func pruneDelays[K comparable](values map[K]delayValue, now time.Time, ttl time.Duration) {
 	for key, value := range values {
 		if now.Sub(value.updatedAt) > ttl {
 			delete(values, key)

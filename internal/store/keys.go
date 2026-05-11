@@ -53,3 +53,11 @@ type protocolDurationKey struct {
 	destination       string
 	actualDestination string
 }
+
+type oomKey struct {
+	container ContainerLabels
+}
+
+type delayKey struct {
+	container ContainerLabels
+}

@@ -14,6 +14,8 @@ type Snapshot struct {
 	IPToFQDN      []IPFQDNSeries
 	Protocol      []ProtocolSeries
 	ProtocolDur   []ProtocolHistogram
+	OOMKills      []OOMSeries
+	Delays        []DelaySeries
 }
 
 type ListenSeries struct {
@@ -81,6 +83,17 @@ type ProtocolHistogram struct {
 	Buckets           []Bucket
 	Sum               float64
 	Count             uint64
+}
+
+type OOMSeries struct {
+	Container ContainerLabels
+	Value     float64
+}
+
+type DelaySeries struct {
+	Container       ContainerLabels
+	CPUDelaySeconds float64
+	IODelaySeconds  float64
 }
 
 type Bucket struct {

@@ -11,6 +11,15 @@ LDFLAGS := -s -w \
     -X pnet-exporter/internal/collector.version=$(VERSION) \
     -X pnet-exporter/internal/collector.commit=$(COMMIT)
 
+BPF_OBJECTS := \
+    bpf/tcp_state.bpf.o \
+    bpf/tcp_retransmit.bpf.o \
+    bpf/tcp_bytes.bpf.o \
+    bpf/tcp_conntrack.bpf.o \
+    bpf/l7.bpf.o \
+    bpf/dns.bpf.o \
+    bpf/oom.bpf.o
+
 test:
 	go test ./...
 
@@ -36,9 +45,10 @@ docker-build:
 vmlinux:
 	bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
 
-bpf: bpf/vmlinux.h
-	clang $(CLANG_FLAGS) -c bpf/tcp_state.bpf.c      -o bpf/tcp_state.bpf.o
-	clang $(CLANG_FLAGS) -c bpf/tcp_retransmit.bpf.c -o bpf/tcp_retransmit.bpf.o
+bpf: bpf/vmlinux.h $(BPF_OBJECTS)
+
+bpf/%.bpf.o: bpf/%.bpf.c bpf/common.h bpf/events.h bpf/vmlinux.h
+	clang $(CLANG_FLAGS) -c $< -o $@
 
 bpf/vmlinux.h:
 	$(MAKE) vmlinux
