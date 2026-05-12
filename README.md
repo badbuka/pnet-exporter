@@ -5,42 +5,109 @@ Prometheus exporter for Podman container network visibility, backed by eBPF.
 The repository uses a flat Go layout: `main.go` at the root, runtime code under
 `internal/`, eBPF C sources under `bpf/`.
 
+## Quick Start
+
+### Requirements
+
+- Linux kernel 5.8+ with eBPF support (`CONFIG_BPF_SYSCALL`, `CONFIG_SCHEDSTATS` for delay accounting)
+- Podman running on the host
+- Root or capabilities: `CAP_BPF`, `CAP_PERFMON`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`
+
+### Run with Docker / Podman
+
+```sh
+podman run -d \
+  --name pnet-exporter \
+  --privileged \
+  --pid=host \
+  --network=host \
+  -v /run/podman/podman.sock:/run/podman/podman.sock \
+  -v /sys:/sys:ro \
+  -v /proc:/proc:ro \
+  badbuka/pnet-exporter:latest
+```
+
+Verify:
+
+```sh
+curl http://localhost:9108/healthz
+curl http://localhost:9108/metrics
+```
+
+### Build and run from source
+
+```sh
+# Requires clang, bpftool, and a kernel with /sys/kernel/btf/vmlinux
+make bpf build
+sudo ./pnet-exporter
+```
+
+Metrics are served at `http://localhost:9108/metrics`.
+
 ## Configuration
 
-Configuration is loaded from environment variables with the `PNET_` prefix.
+All configuration is via environment variables with the `PNET_` prefix.
 
-- `PNET_LISTEN_ADDRESS`: Prometheus HTTP listen address, default `:9108`.
-- `PNET_LOG_LEVEL`: `debug`, `info`, `warn`, or `error`, default `info`.
-- `PNET_PODMAN_SOCKET`: Podman API socket path, default `/run/podman/podman.sock`.
-- `PNET_PODMAN_BINARY`: Podman CLI fallback binary, default `podman`.
-- `PNET_DISCOVERY_INTERVAL`: Podman discovery refresh interval, default `10s`.
-- `PNET_SHUTDOWN_TIMEOUT`: graceful HTTP shutdown timeout, default `10s`.
-- `PNET_CONTAINER_TTL`: how long the identity cache keeps a container after
-  Podman stops reporting it, default `1m`.
-- `PNET_SYSFS`, `PNET_PROCFS`: sysfs/procfs roots used by startup checks and
-  the node-runtime collector. Defaults `/sys`, `/proc`.
-- `PNET_FEATURE_NETWORK`, `PNET_FEATURE_DNS`, `PNET_FEATURE_HTTP`,
-  `PNET_FEATURE_POSTGRES`, `PNET_FEATURE_REDIS`, `PNET_FEATURE_KAFKA`: feature
-  toggles, default `true`.
-- `PNET_FEATURE_LATENCY`: per-container ICMP probing, default `false`.
-- `PNET_FEATURE_NODE_METRICS`: node-level `/proc` collectors, default `true`.
-- `PNET_FEATURE_DELAY_ACCOUNTING`: per-container schedstat-driven CPU/IO delay
-  counters, default `true`.
-- `PNET_FEATURE_OOM`: container OOM-kill counter, default `true`.
-- `PNET_MAX_DESTINATIONS_PER_CONTAINER`, `PNET_MAX_FQDNS_PER_CONTAINER`:
-  cardinality limits.
-- `PNET_METRIC_TTL`: TTL for *momentary* series (active connections, latency,
-  histograms, IP→FQDN); counter series are pruned only when their container
-  disappears, to preserve counter monotonicity.
-- `PNET_CLEANUP_INTERVAL`: how often the janitor runs.
-- `PNET_DURATION_BUCKETS`, `PNET_DNS_DURATION_BUCKETS`: comma-separated
-  Prometheus histogram buckets in seconds.
-- `PNET_LATENCY_INTERVAL`, `PNET_LATENCY_TIMEOUT`, `PNET_LATENCY_MAX_TARGETS`:
-  ICMP prober tuning.
-- `PNET_DELAY_INTERVAL`: how often per-container CPU/disk delay counters are
-  scraped from `/proc/<pid>/schedstat` and `/proc/<pid>/stat`.
-- `PNET_BPF_DIR`: directory containing compiled eBPF objects, default `./bpf`.
-- `PNET_RING_BUFFER_SIZE`: hint for the BPF ring buffer size, default `1048576`.
+### General
+
+| Variable | Default | Description |
+|---|---|---|
+| `PNET_LISTEN_ADDRESS` | `:9108` | Prometheus HTTP listen address |
+| `PNET_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
+| `PNET_SHUTDOWN_TIMEOUT` | `10s` | Graceful HTTP shutdown timeout |
+| `PNET_BPF_DIR` | `./bpf` | Directory containing compiled `.bpf.o` objects |
+| `PNET_RING_BUFFER_SIZE` | `1048576` | BPF ring buffer size hint (bytes) |
+| `PNET_SYSFS` | `/sys` | sysfs root (used by startup checks) |
+| `PNET_PROCFS` | `/proc` | procfs root (used by node and delay collectors) |
+
+### Podman discovery
+
+| Variable | Default | Description |
+|---|---|---|
+| `PNET_PODMAN_SOCKET` | `/run/podman/podman.sock` | Podman API socket path |
+| `PNET_PODMAN_BINARY` | `podman` | Podman CLI binary (fallback when socket is unavailable) |
+| `PNET_DISCOVERY_INTERVAL` | `10s` | How often the container list is refreshed from Podman |
+| `PNET_CONTAINER_TTL` | `1m` | How long the identity cache retains a container after Podman stops reporting it |
+
+### Feature flags
+
+| Variable | Default | Description |
+|---|---|---|
+| `PNET_FEATURE_NETWORK` | `true` | TCP connect/close/bytes/retransmit metrics |
+| `PNET_FEATURE_DNS` | `true` | DNS request metrics |
+| `PNET_FEATURE_HTTP` | `true` | HTTP request metrics and latency histograms |
+| `PNET_FEATURE_POSTGRES` | `true` | Postgres query metrics |
+| `PNET_FEATURE_REDIS` | `true` | Redis query metrics |
+| `PNET_FEATURE_KAFKA` | `true` | Kafka request metrics |
+| `PNET_FEATURE_LATENCY` | `false` | Per-container ICMP RTT probing |
+| `PNET_FEATURE_NODE_METRICS` | `true` | Host-level CPU / memory / disk / network metrics from `/proc` |
+| `PNET_FEATURE_DELAY_ACCOUNTING` | `true` | Per-container CPU and disk I/O wait counters from `/proc/<pid>/schedstat` |
+| `PNET_FEATURE_OOM` | `true` | Container OOM-kill counter |
+
+### Metrics tuning
+
+| Variable | Default | Description |
+|---|---|---|
+| `PNET_METRIC_TTL` | `10m` | TTL for momentary series (active connections, latency, histograms, IP→FQDN). Counters are kept until the container disappears. |
+| `PNET_CLEANUP_INTERVAL` | `1m` | How often the janitor prunes expired series |
+| `PNET_MAX_DESTINATIONS_PER_CONTAINER` | `512` | Max distinct destination labels per container; excess values become `~other` |
+| `PNET_MAX_FQDNS_PER_CONTAINER` | `100` | Max distinct FQDN labels per container; excess values become `~other` |
+| `PNET_DURATION_BUCKETS` | `0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10` | Histogram bucket boundaries for L7 request durations (seconds, comma-separated) |
+| `PNET_DNS_DURATION_BUCKETS` | `0.001,0.0025,0.005,0.01,0.025,0.05,0.1,0.25,0.5` | Histogram bucket boundaries for DNS request durations (seconds, comma-separated) |
+
+### ICMP latency prober (`PNET_FEATURE_LATENCY=true`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `PNET_LATENCY_INTERVAL` | `30s` | How often ICMP probes are sent per container |
+| `PNET_LATENCY_TIMEOUT` | `1s` | Probe timeout |
+| `PNET_LATENCY_MAX_TARGETS` | `100` | Max destinations probed per container per interval |
+
+### Delay accounting (`PNET_FEATURE_DELAY_ACCOUNTING=true`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `PNET_DELAY_INTERVAL` | `15s` | How often `/proc/<pid>/schedstat` is read per container |
 
 ## Building
 

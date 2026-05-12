@@ -2,7 +2,6 @@ package node
 
 import (
 	"log/slog"
-	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -15,7 +14,6 @@ const clockTicksPerSecond = 100.0
 type Collector struct {
 	procRoot string
 	logger   *slog.Logger
-	once     sync.Once
 	hostname string
 
 	cpuSeconds       *prometheus.Desc

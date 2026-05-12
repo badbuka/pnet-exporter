@@ -54,3 +54,57 @@ func TestRequestTracker(t *testing.T) {
 		t.Fatalf("unexpected duration: %s ok=%v", duration, ok)
 	}
 }
+
+func TestNormalizeStatus(t *testing.T) {
+	tests := []struct {
+		protocol store.Protocol
+		raw      string
+		want     string
+	}{
+		{store.ProtocolHTTP, "200", "200"},
+		{store.ProtocolHTTP, "404", "404"},
+		{store.ProtocolHTTP, "", "unknown"},
+		{store.ProtocolPostgres, "ok", "ok"},
+		{store.ProtocolPostgres, "error", "error"},
+		{store.ProtocolPostgres, "timeout", "timeout"},
+		{store.ProtocolPostgres, "junk", "unknown"},
+		{store.ProtocolRedis, "ok", "ok"},
+		{store.ProtocolRedis, "error", "error"},
+		{store.ProtocolKafka, "ok", "ok"},
+		{store.ProtocolKafka, "junk", "unknown"},
+		{"unknown", "anything", "unknown"},
+		{"unknown", "", "unknown"},
+	}
+	for _, tc := range tests {
+		got := NormalizeStatus(tc.protocol, tc.raw)
+		if got != tc.want {
+			t.Errorf("NormalizeStatus(%q, %q) = %q; want %q", tc.protocol, tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestProtocolForPortUnknown(t *testing.T) {
+	c := NewClassifier()
+	if _, ok := c.ProtocolForPort(1234); ok {
+		t.Fatal("expected false for unknown port 1234")
+	}
+}
+
+func TestRequestTrackerMiss(t *testing.T) {
+	tracker := NewRequestTracker(time.Second)
+	key := RequestKey{ContainerID: "c1", Destination: "db:5432", Protocol: store.ProtocolPostgres, CorrelationID: "never-started"}
+	if _, ok := tracker.Finish(key, time.Now()); ok {
+		t.Fatal("expected miss on key that was never started")
+	}
+}
+
+func TestRequestTrackerPrune(t *testing.T) {
+	tracker := NewRequestTracker(time.Second)
+	key := RequestKey{ContainerID: "c1", Destination: "db:5432", Protocol: store.ProtocolPostgres, CorrelationID: "p1"}
+	start := time.Unix(10, 0)
+	tracker.Start(key, start)
+	tracker.Prune(start.Add(2 * time.Second))
+	if _, ok := tracker.Finish(key, start.Add(3*time.Second)); ok {
+		t.Fatal("expected miss after TTL prune")
+	}
+}

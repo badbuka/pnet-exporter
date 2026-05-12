@@ -31,7 +31,7 @@ func ReadCPUTimes(procRoot string) (CPUTimes, error) {
 	}
 	data, err := os.ReadFile(procRoot + "/stat")
 	if err != nil {
-		return CPUTimes{}, err
+		return CPUTimes{}, fmt.Errorf("read /proc/stat: %w", err)
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if !strings.HasPrefix(line, "cpu ") {
@@ -73,9 +73,9 @@ func ReadMemory(procRoot string) (Memory, error) {
 	}
 	f, err := os.Open(procRoot + "/meminfo")
 	if err != nil {
-		return Memory{}, err
+		return Memory{}, fmt.Errorf("open /proc/meminfo: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	out := Memory{}
 	scanner := bufio.NewScanner(f)
@@ -121,7 +121,7 @@ func Uptime(procRoot string) (float64, error) {
 	}
 	data, err := os.ReadFile(procRoot + "/uptime")
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("read /proc/uptime: %w", err)
 	}
 	fields := strings.Fields(string(data))
 	if len(fields) == 0 {
@@ -150,9 +150,9 @@ func ReadDiskCounters(procRoot string) ([]DiskCounters, error) {
 	}
 	f, err := os.Open(procRoot + "/diskstats")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open /proc/diskstats: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var out []DiskCounters
 	scanner := bufio.NewScanner(f)
@@ -201,9 +201,9 @@ func ReadNetInterfaceCounters(procRoot string) ([]NetInterfaceCounters, error) {
 	}
 	f, err := os.Open(procRoot + "/net/dev")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open /proc/net/dev: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var out []NetInterfaceCounters
 	scanner := bufio.NewScanner(f)

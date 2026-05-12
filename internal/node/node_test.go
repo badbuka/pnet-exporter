@@ -60,3 +60,84 @@ func TestReadDiskCountersSkipsLoop(t *testing.T) {
 		t.Fatalf("unexpected disks: %+v", disks)
 	}
 }
+
+func TestUptime(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "uptime"), []byte("12345.67 89012.34\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	up, err := Uptime(root)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if up != 12345.67 {
+		t.Fatalf("expected 12345.67, got %f", up)
+	}
+}
+
+func TestUptimeEmpty(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "uptime"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Uptime(root); err == nil {
+		t.Fatal("expected error for empty uptime file")
+	}
+}
+
+func TestReadNetInterfaceCounters(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "net"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "Inter-|   Receive                                                |  Transmit\n" +
+		" face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n" +
+		"    lo:    1000      10    0    0    0     0          0         0     1000      10    0    0    0     0       0          0\n" +
+		"  eth0:  999000    5000    1    0    0     0          0         0   555000    3000    2    0    0     0       0          0\n"
+	if err := os.WriteFile(filepath.Join(root, "net", "dev"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nics, err := ReadNetInterfaceCounters(root)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(nics) != 2 {
+		t.Fatalf("expected 2 interfaces, got %d", len(nics))
+	}
+	for _, nic := range nics {
+		switch nic.Interface {
+		case "lo":
+			if nic.ReceivedBytes != 1000 {
+				t.Fatalf("lo ReceivedBytes: got %d, want 1000", nic.ReceivedBytes)
+			}
+		case "eth0":
+			if nic.ReceivedErrors != 1 {
+				t.Fatalf("eth0 ReceivedErrors: got %d, want 1", nic.ReceivedErrors)
+			}
+			if nic.TransmitErrors != 2 {
+				t.Fatalf("eth0 TransmitErrors: got %d, want 2", nic.TransmitErrors)
+			}
+		default:
+			t.Fatalf("unexpected interface: %q", nic.Interface)
+		}
+	}
+}
+
+func TestReadNetInterfaceCountersSkipsShort(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "net"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "Inter-|   Receive                                                |  Transmit\n" +
+		" face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n"
+	if err := os.WriteFile(filepath.Join(root, "net", "dev"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nics, err := ReadNetInterfaceCounters(root)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(nics) != 0 {
+		t.Fatalf("expected empty slice for header-only file, got %d", len(nics))
+	}
+}

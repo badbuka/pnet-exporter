@@ -124,7 +124,7 @@ func (r *Reader) cgroupPIDs(container identity.Container) ([]int, error) {
 	path := "/sys/fs/cgroup" + container.CgroupPath + "/cgroup.procs"
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read cgroup.procs %s: %w", path, err)
 	}
 	var out []int
 	for _, line := range strings.Split(string(data), "\n") {
@@ -153,7 +153,7 @@ func readSchedStat(procRoot string, pid int) (runWaitNS, ioWaitNS uint64, err er
 	statPath := fmt.Sprintf("%s/%d/schedstat", procRoot, pid)
 	data, err := os.ReadFile(statPath)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("read schedstat for pid %d: %w", pid, err)
 	}
 	fields := strings.Fields(string(data))
 	if len(fields) < 2 {
@@ -161,7 +161,7 @@ func readSchedStat(procRoot string, pid int) (runWaitNS, ioWaitNS uint64, err er
 	}
 	runWaitNS, err = strconv.ParseUint(fields[1], 10, 64)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("parse schedstat run_wait for pid %d: %w", pid, err)
 	}
 
 	// blkio ticks (clock ticks) come from /proc/<pid>/stat field 42.

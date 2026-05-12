@@ -2,8 +2,10 @@ package protocol
 
 import "pnet-exporter/internal/store"
 
+// Classifier maps TCP port numbers to the application protocols the exporter has parsers for.
 type Classifier struct{}
 
+// NewClassifier returns a zero-value Classifier.
 func NewClassifier() Classifier {
 	return Classifier{}
 }

@@ -3,6 +3,7 @@ package ebpf
 import (
 	"encoding/binary"
 	"testing"
+	"time"
 
 	"pnet-exporter/internal/store"
 )
@@ -112,5 +113,79 @@ func TestNATCachePutLookup(t *testing.T) {
 	}
 	if got := cache.Lookup("unknown:80"); got != "unknown:80" {
 		t.Fatalf("fallback: %s", got)
+	}
+}
+
+func TestDecodeTCPEventIPv6(t *testing.T) {
+	buf := make([]byte, tcpEventWireSize)
+	buf[0] = byte(EventTCPSuccessfulConnect)
+	// destination ::1 (loopback), port 443, family AF_INET6 (10)
+	buf[36+15] = 1 // last byte of IPv6 loopback
+	binary.LittleEndian.PutUint16(buf[54:56], 443)
+	binary.LittleEndian.PutUint16(buf[56:58], familyIPv6)
+
+	event, err := DecodeTCPEvent(buf)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := event.Tuple.Destination(); got != "::1:443" {
+		t.Fatalf("IPv6 destination: got %q, want ::1:443", got)
+	}
+}
+
+func TestNATCachePruneTTL(t *testing.T) {
+	cache := NewNATCache(time.Second)
+	now := time.Now()
+	cache.Put("svc:80", "10.0.0.1:80")
+	cache.Prune(now.Add(2 * time.Second))
+	// After pruning, Lookup must fall back to the original key.
+	if got := cache.Lookup("svc:80"); got != "svc:80" {
+		t.Fatalf("expected fallback after prune, got %q", got)
+	}
+}
+
+func TestNATCachePruneRetainsRecent(t *testing.T) {
+	cache := NewNATCache(time.Second)
+	now := time.Now()
+	cache.Put("svc:80", "10.0.0.1:80")
+	cache.Prune(now.Add(-time.Second)) // prune time before TTL
+	if got := cache.Lookup("svc:80"); got != "10.0.0.1:80" {
+		t.Fatalf("expected stored destination before TTL, got %q", got)
+	}
+}
+
+func TestDecodeL7Event(t *testing.T) {
+	buf := make([]byte, l7EventWireSize)
+	buf[0] = byte(EventL7)
+	buf[1] = byte(DirResponse)
+	binary.LittleEndian.PutUint16(buf[2:4], 4) // PayloadLen = 4
+	binary.LittleEndian.PutUint16(buf[56:58], familyIPv4)
+	copy(buf[72:76], []byte{0xDE, 0xAD, 0xBE, 0xEF})
+
+	event, err := DecodeL7Event(buf)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if event.Direction != DirResponse {
+		t.Fatalf("direction: got %d", event.Direction)
+	}
+	if len(event.Payload) != 4 || event.Payload[0] != 0xDE || event.Payload[3] != 0xEF {
+		t.Fatalf("payload: got %v", event.Payload)
+	}
+}
+
+func TestDecodeDNSWireEvent(t *testing.T) {
+	buf := make([]byte, dnsEventWireSize)
+	buf[0] = byte(EventDNS)
+	binary.LittleEndian.PutUint16(buf[2:4], 6) // PayloadLen = 6
+	binary.LittleEndian.PutUint16(buf[56:58], familyIPv4)
+	copy(buf[64:70], []byte{1, 2, 3, 4, 5, 6})
+
+	event, err := DecodeDNSWireEvent(buf)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(event.Payload) != 6 || event.Payload[5] != 6 {
+		t.Fatalf("payload: got %v", event.Payload)
 	}
 }

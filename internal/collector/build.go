@@ -11,10 +11,12 @@ var (
 	commit  = "unknown"
 )
 
+// BuildCollector is a prometheus.Collector that emits a single gauge carrying build metadata (version, commit, Go runtime version).
 type BuildCollector struct {
 	info *prometheus.Desc
 }
 
+// NewBuildCollector returns a BuildCollector ready to register with a Prometheus registry.
 func NewBuildCollector() *BuildCollector {
 	return &BuildCollector{
 		info: prometheus.NewDesc(

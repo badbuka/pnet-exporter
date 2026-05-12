@@ -2,6 +2,7 @@ package store
 
 import "time"
 
+// ContainerLabels holds the Prometheus label values attached to every metric series for a single container.
 type ContainerLabels struct {
 	ContainerID   string
 	ContainerName string
@@ -12,11 +13,13 @@ func (l ContainerLabels) Values() []string {
 	return []string{l.ContainerID, l.ContainerName, l.PodID}
 }
 
+// Endpoint describes a TCP destination, optionally including the post-NAT actual destination.
 type Endpoint struct {
 	Destination       string
 	ActualDestination string
 }
 
+// TCPEvent carries a single TCP lifecycle event (connect, close, bytes, etc.) from the BPF layer to the store.
 type TCPEvent struct {
 	Container ContainerLabels
 	Endpoint  Endpoint
@@ -24,6 +27,7 @@ type TCPEvent struct {
 	Value     float64
 }
 
+// ListenEndpoint describes a TCP address that a container is actively listening on.
 type ListenEndpoint struct {
 	Container  ContainerLabels
 	ListenAddr string
@@ -31,6 +35,7 @@ type ListenEndpoint struct {
 	Value      float64
 }
 
+// DNSEvent carries a single DNS request/response observation from the BPF layer to the store.
 type DNSEvent struct {
 	Container   ContainerLabels
 	Domain      string
@@ -39,6 +44,7 @@ type DNSEvent struct {
 	Duration    time.Duration
 }
 
+// IPFQDNMapping records that a given IP address resolved to the named FQDN within a container.
 type IPFQDNMapping struct {
 	Container ContainerLabels
 	IP        string
@@ -55,6 +61,7 @@ const (
 	ProtocolKafka    Protocol = "kafka"
 )
 
+// ProtocolEvent carries a single application-protocol request observation (HTTP, Postgres, Redis, Kafka) from the BPF layer to the store.
 type ProtocolEvent struct {
 	Protocol  Protocol
 	Container ContainerLabels

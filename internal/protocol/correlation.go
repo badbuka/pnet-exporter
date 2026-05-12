@@ -7,6 +7,7 @@ import (
 	"pnet-exporter/internal/store"
 )
 
+// RequestKey uniquely identifies an in-flight protocol request for matching it to its response.
 type RequestKey struct {
 	ContainerID       string
 	Destination       string
@@ -15,6 +16,7 @@ type RequestKey struct {
 	Protocol          store.Protocol
 }
 
+// RequestTracker maintains in-flight protocol request start times keyed by RequestKey. It is safe for concurrent use.
 type RequestTracker struct {
 	mu       sync.Mutex
 	requests map[RequestKey]time.Time
