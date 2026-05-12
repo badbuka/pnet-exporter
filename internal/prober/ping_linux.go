@@ -29,13 +29,13 @@ func pingFromNetns(pid int, targets []string, timeout time.Duration, baseSeq uin
 	if err != nil {
 		return nil, err
 	}
-	defer currentNS.Close()
+	defer func() { _ = currentNS.Close() }()
 
 	targetNS, err := os.Open("/proc/" + strconv.Itoa(pid) + "/ns/net")
 	if err != nil {
 		return nil, err
 	}
-	defer targetNS.Close()
+	defer func() { _ = targetNS.Close() }()
 
 	if err := setns(int(targetNS.Fd())); err != nil {
 		return nil, err
@@ -48,7 +48,7 @@ func pingFromNetns(pid int, targets []string, timeout time.Duration, baseSeq uin
 	if err != nil {
 		return nil, err
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 
 	if timeout <= 0 {
 		timeout = time.Second
