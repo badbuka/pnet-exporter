@@ -12,7 +12,68 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
  * symbol is missing the loader degrades gracefully (the .o is skipped).
  */
 
-static __always_inline void copy_addr(__u8 *dst, struct nf_conntrack_tuple *t,
+/*
+ * Self-contained CO-RE type definitions for netfilter conntrack.
+ *
+ * The arm64 vmlinux.h from the libbpf/vmlinux.h repo is generated from
+ * a kernel without CONFIG_NF_CONNTRACK built-in, leaving nf_conn,
+ * nf_conntrack_tuple, nf_conntrack, and sk_buff._nfct unavailable.
+ *
+ * The '___pnet' suffix is stripped by the BPF loader when resolving
+ * field offsets against the running kernel's BTF, so each type here
+ * maps to its canonical kernel counterpart at load time.
+ */
+
+struct in6_addr___pnet {
+	union {
+		__u8 u6_addr8[16];
+	} in6_u;
+} __attribute__((preserve_access_index));
+
+union nf_inet_addr___pnet {
+	__be32 ip;
+	struct in6_addr___pnet in6;
+} __attribute__((preserve_access_index));
+
+union nf_conntrack_man_proto___pnet {
+	__be16 all;
+} __attribute__((preserve_access_index));
+
+struct nf_conntrack_man___pnet {
+	union nf_inet_addr___pnet u3;
+	union nf_conntrack_man_proto___pnet u;
+	__u16 l3num;
+} __attribute__((preserve_access_index));
+
+struct nf_conntrack_tuple___pnet {
+	struct nf_conntrack_man___pnet src;
+	struct {
+		union nf_inet_addr___pnet u3;
+		union nf_conntrack_man_proto___pnet u;
+		__u8 protonum;
+		__u8 dir;
+	} dst;
+} __attribute__((preserve_access_index));
+
+struct nf_conntrack_tuple_hash___pnet {
+	struct hlist_nulls_node hnnode;
+	struct nf_conntrack_tuple___pnet tuple;
+} __attribute__((preserve_access_index));
+
+struct nf_conn___pnet {
+	/* ct_general (nf_conntrack) placeholder; only tuplehash is accessed.
+	 * CO-RE resolves the actual offset of tuplehash from kernel BTF. */
+	__u64 ct_general;
+	struct nf_conntrack_tuple_hash___pnet tuplehash[2];
+} __attribute__((preserve_access_index));
+
+/* sk_buff with the _nfct field used for conntrack pointer retrieval. */
+struct sk_buff___pnet {
+	unsigned long _nfct;
+} __attribute__((preserve_access_index));
+
+static __always_inline void copy_addr(__u8 *dst,
+				      struct nf_conntrack_tuple___pnet *t,
 				      bool src, __u16 family)
 {
 	if (family == AF_INET_VALUE) {
@@ -31,7 +92,7 @@ static __always_inline void copy_addr(__u8 *dst, struct nf_conntrack_tuple *t,
 }
 
 static __always_inline void fill_tuple(struct socket_tuple *st,
-				       struct nf_conntrack_tuple *t)
+				       struct nf_conntrack_tuple___pnet *t)
 {
 	__u16 family = 0;
 	BPF_CORE_READ_INTO(&family, t, src.l3num);
@@ -48,11 +109,11 @@ static __always_inline void fill_tuple(struct socket_tuple *st,
 SEC("kprobe/__nf_conntrack_confirm")
 int BPF_KPROBE(handle_conntrack_confirm, struct sk_buff *skb)
 {
-	struct nf_conn *ct;
+	struct nf_conn___pnet *ct;
 	struct nat_event *event;
 
-	ct = (struct nf_conn *)BPF_CORE_READ(skb, _nfct);
-	ct = (struct nf_conn *)((unsigned long)ct & ~7UL);
+	ct = (struct nf_conn___pnet *)BPF_CORE_READ((struct sk_buff___pnet *)skb, _nfct);
+	ct = (struct nf_conn___pnet *)((unsigned long)ct & ~7UL);
 	if (!ct)
 		return 0;
 
@@ -65,9 +126,9 @@ int BPF_KPROBE(handle_conntrack_confirm, struct sk_buff *skb)
 	event->cgroup_id = current_cgroup_id();
 	event->pid = bpf_get_current_pid_tgid() >> 32;
 
-	struct nf_conntrack_tuple *orig =
+	struct nf_conntrack_tuple___pnet *orig =
 		&ct->tuplehash[0 /* IP_CT_DIR_ORIGINAL */].tuple;
-	struct nf_conntrack_tuple *reply =
+	struct nf_conntrack_tuple___pnet *reply =
 		&ct->tuplehash[1 /* IP_CT_DIR_REPLY */].tuple;
 	fill_tuple(&event->orig, orig);
 	fill_tuple(&event->reply, reply);
