@@ -27,6 +27,17 @@ type Config struct {
 	Latency           LatencyConfig
 	Delays            DelayConfig
 	EBPF              EBPFConfig
+	Protocols         ProtocolsConfig
+}
+
+// ProtocolsConfig carries operator-supplied TCP port lists that are
+// appended to the L7 classifier's built-in defaults. Empty slices mean
+// "no extra ports for this protocol".
+type ProtocolsConfig struct {
+	HTTPPorts     []uint16
+	PostgresPorts []uint16
+	RedisPorts    []uint16
+	KafkaPorts    []uint16
 }
 
 type Features struct {
@@ -101,6 +112,10 @@ type envConfig struct {
 	DelayInterval         time.Duration `envconfig:"DELAY_INTERVAL"                 default:"15s"`
 	BPFDir                string        `envconfig:"BPF_DIR"                        default:"./bpf"`
 	RingBufferSize        int           `envconfig:"RING_BUFFER_SIZE"               default:"1048576"`
+	HTTPPorts             string        `envconfig:"HTTP_PORTS"                     default:""`
+	PostgresPorts         string        `envconfig:"POSTGRES_PORTS"                 default:""`
+	RedisPorts            string        `envconfig:"REDIS_PORTS"                    default:""`
+	KafkaPorts            string        `envconfig:"KAFKA_PORTS"                    default:""`
 }
 
 // Load reads PNET_* environment variables and returns a validated Config.
@@ -178,6 +193,23 @@ func (e envConfig) toConfig() (Config, error) {
 		return Config{}, fmt.Errorf("invalid PNET_LOG_LEVEL: %w", err)
 	}
 
+	httpPorts, err := parsePorts(e.HTTPPorts)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid PNET_HTTP_PORTS: %w", err)
+	}
+	postgresPorts, err := parsePorts(e.PostgresPorts)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid PNET_POSTGRES_PORTS: %w", err)
+	}
+	redisPorts, err := parsePorts(e.RedisPorts)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid PNET_REDIS_PORTS: %w", err)
+	}
+	kafkaPorts, err := parsePorts(e.KafkaPorts)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid PNET_KAFKA_PORTS: %w", err)
+	}
+
 	cfg := Config{
 		ListenAddress:     e.ListenAddress,
 		PodmanSocket:      e.PodmanSocket,
@@ -220,6 +252,12 @@ func (e envConfig) toConfig() (Config, error) {
 			BPFDir:         e.BPFDir,
 			RingBufferSize: e.RingBufferSize,
 		},
+		Protocols: ProtocolsConfig{
+			HTTPPorts:     httpPorts,
+			PostgresPorts: postgresPorts,
+			RedisPorts:    redisPorts,
+			KafkaPorts:    kafkaPorts,
+		},
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -248,6 +286,39 @@ func parseBuckets(value string) ([]float64, error) {
 		return nil, errors.New("at least one bucket is required")
 	}
 	return buckets, nil
+}
+
+// parsePorts splits a comma-separated list of TCP port numbers and
+// rejects empty entries, out-of-range values, and duplicates within the
+// same list. An empty input yields a nil slice (no extra ports).
+func parsePorts(value string) ([]uint16, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil, nil
+	}
+	parts := strings.Split(trimmed, ",")
+	ports := make([]uint16, 0, len(parts))
+	seen := make(map[uint16]struct{}, len(parts))
+	for _, part := range parts {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+		n, err := strconv.ParseUint(p, 10, 16)
+		if err != nil {
+			return nil, fmt.Errorf("port %q: %w", p, err)
+		}
+		if n == 0 {
+			return nil, fmt.Errorf("port %q must be in 1..65535", p)
+		}
+		port := uint16(n)
+		if _, dup := seen[port]; dup {
+			return nil, fmt.Errorf("duplicate port %d", port)
+		}
+		seen[port] = struct{}{}
+		ports = append(ports, port)
+	}
+	return ports, nil
 }
 
 func parseLogLevel(value string) (slog.Level, error) {

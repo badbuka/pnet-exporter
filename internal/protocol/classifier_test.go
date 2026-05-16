@@ -8,7 +8,10 @@ import (
 )
 
 func TestProtocolForPort(t *testing.T) {
-	classifier := NewClassifier()
+	classifier, err := NewClassifier(nil)
+	if err != nil {
+		t.Fatalf("NewClassifier(nil) error: %v", err)
+	}
 	protocol, ok := classifier.ProtocolForPort(5432)
 	if !ok || protocol != store.ProtocolPostgres {
 		t.Fatalf("expected postgres for 5432, got %q ok=%v", protocol, ok)
@@ -84,9 +87,61 @@ func TestNormalizeStatus(t *testing.T) {
 }
 
 func TestProtocolForPortUnknown(t *testing.T) {
-	c := NewClassifier()
+	c, err := NewClassifier(nil)
+	if err != nil {
+		t.Fatalf("NewClassifier(nil) error: %v", err)
+	}
 	if _, ok := c.ProtocolForPort(1234); ok {
 		t.Fatal("expected false for unknown port 1234")
+	}
+}
+
+func TestClassifierExtraPorts(t *testing.T) {
+	c, err := NewClassifier(map[store.Protocol][]uint16{
+		store.ProtocolPostgres: {15432, 25432},
+		store.ProtocolRedis:    {16379},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if proto, ok := c.ProtocolForPort(15432); !ok || proto != store.ProtocolPostgres {
+		t.Fatalf("expected postgres for 15432, got %q ok=%v", proto, ok)
+	}
+	if proto, ok := c.ProtocolForPort(25432); !ok || proto != store.ProtocolPostgres {
+		t.Fatalf("expected postgres for 25432, got %q ok=%v", proto, ok)
+	}
+	if proto, ok := c.ProtocolForPort(16379); !ok || proto != store.ProtocolRedis {
+		t.Fatalf("expected redis for 16379, got %q ok=%v", proto, ok)
+	}
+	if proto, ok := c.ProtocolForPort(5432); !ok || proto != store.ProtocolPostgres {
+		t.Fatalf("default 5432 lost: %q ok=%v", proto, ok)
+	}
+}
+
+func TestClassifierExtraPortConflictWithDefault(t *testing.T) {
+	_, err := NewClassifier(map[store.Protocol][]uint16{
+		store.ProtocolHTTP: {5432},
+	})
+	if err == nil {
+		t.Fatal("expected conflict when extra HTTP port collides with default postgres 5432")
+	}
+}
+
+func TestClassifierExtraPortConflictAcrossExtras(t *testing.T) {
+	_, err := NewClassifier(map[store.Protocol][]uint16{
+		store.ProtocolHTTP:  {17000},
+		store.ProtocolRedis: {17000},
+	})
+	if err == nil {
+		t.Fatal("expected conflict when two extra protocols share the same port")
+	}
+}
+
+func TestClassifierSameProtocolDuplicateExtraOK(t *testing.T) {
+	if _, err := NewClassifier(map[store.Protocol][]uint16{
+		store.ProtocolPostgres: {5432, 5432},
+	}); err != nil {
+		t.Fatalf("same-protocol duplicate should not error, got %v", err)
 	}
 }
 

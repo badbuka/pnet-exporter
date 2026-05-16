@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"pnet-exporter/internal/node"
 	"pnet-exporter/internal/podman"
 	"pnet-exporter/internal/prober"
+	"pnet-exporter/internal/protocol"
 	"pnet-exporter/internal/store"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -65,7 +67,17 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		logger.Warn("initial podman discovery failed", "error", err)
 	}
 
-	loader := ebpf.NewLoader(cfg.EBPF, identityCache, metricStore, logger)
+	classifier, err := protocol.NewClassifier(map[store.Protocol][]uint16{
+		store.ProtocolHTTP:     cfg.Protocols.HTTPPorts,
+		store.ProtocolPostgres: cfg.Protocols.PostgresPorts,
+		store.ProtocolRedis:    cfg.Protocols.RedisPorts,
+		store.ProtocolKafka:    cfg.Protocols.KafkaPorts,
+	})
+	if err != nil {
+		return fmt.Errorf("build protocol classifier: %w", err)
+	}
+
+	loader := ebpf.NewLoader(cfg.EBPF, classifier, identityCache, metricStore, logger)
 	if cfg.Features.Network {
 		if err := loader.Start(ctx); err != nil {
 			return err

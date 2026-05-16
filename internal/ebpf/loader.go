@@ -110,14 +110,14 @@ type Loader struct {
 	state loaderState
 }
 
-func NewLoader(cfg config.EBPFConfig, identity *identity.Cache, metricStore *store.Store, logger *slog.Logger) *Loader {
+func NewLoader(cfg config.EBPFConfig, classifier protocol.Classifier, identity *identity.Cache, metricStore *store.Store, logger *slog.Logger) *Loader {
 	return &Loader{
 		cfg:        cfg,
 		identity:   identity,
 		store:      metricStore,
 		logger:     logger,
 		nat:        NewNATCache(5 * time.Minute),
-		classifier: protocol.NewClassifier(),
+		classifier: classifier,
 		tracker:    protocol.NewRequestTracker(30 * time.Second),
 	}
 }

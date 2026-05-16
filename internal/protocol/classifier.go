@@ -1,31 +1,64 @@
 package protocol
 
-import "pnet-exporter/internal/store"
+import (
+	"fmt"
+
+	"pnet-exporter/internal/store"
+)
 
 // Classifier maps TCP port numbers to the application protocols the exporter has parsers for.
-type Classifier struct{}
-
-// NewClassifier returns a zero-value Classifier.
-func NewClassifier() Classifier {
-	return Classifier{}
+type Classifier struct {
+	byPort map[uint16]store.Protocol
 }
 
-// ProtocolForPort returns the most likely application protocol for a
-// given TCP port. The mapping is intentionally limited to ports the
-// exporter has parsers for; unknown ports return ("", false).
-func (Classifier) ProtocolForPort(port uint16) (store.Protocol, bool) {
-	switch port {
-	case 80, 8080, 8000, 3000, 5000:
-		return store.ProtocolHTTP, true
-	case 5432:
-		return store.ProtocolPostgres, true
-	case 6379:
-		return store.ProtocolRedis, true
-	case 9092, 9093, 9094:
-		return store.ProtocolKafka, true
-	default:
-		return "", false
+// defaultPorts returns the built-in protocol-to-port mapping. These
+// ports are always recognised regardless of operator configuration.
+func defaultPorts() map[store.Protocol][]uint16 {
+	return map[store.Protocol][]uint16{
+		store.ProtocolHTTP:     {80, 8080, 8000, 3000, 5000},
+		store.ProtocolPostgres: {5432},
+		store.ProtocolRedis:    {6379},
+		store.ProtocolKafka:    {9092, 9093, 9094},
 	}
+}
+
+// NewClassifier builds a Classifier that recognises the built-in
+// default ports plus any operator-supplied extras. The extras map keys
+// the additional ports by protocol; nil or empty entries are ignored.
+// It returns an error if any port (default or extra) is claimed by more
+// than one protocol, naming both sides of the conflict.
+func NewClassifier(extra map[store.Protocol][]uint16) (Classifier, error) {
+	byPort := make(map[uint16]store.Protocol)
+	add := func(proto store.Protocol, port uint16) error {
+		if existing, ok := byPort[port]; ok && existing != proto {
+			return fmt.Errorf("port %d claimed by both %s and %s", port, existing, proto)
+		}
+		byPort[port] = proto
+		return nil
+	}
+
+	for proto, ports := range defaultPorts() {
+		for _, port := range ports {
+			if err := add(proto, port); err != nil {
+				return Classifier{}, err
+			}
+		}
+	}
+	for proto, ports := range extra {
+		for _, port := range ports {
+			if err := add(proto, port); err != nil {
+				return Classifier{}, err
+			}
+		}
+	}
+	return Classifier{byPort: byPort}, nil
+}
+
+// ProtocolForPort returns the application protocol registered for the
+// given TCP port. Unknown ports return ("", false).
+func (c Classifier) ProtocolForPort(port uint16) (store.Protocol, bool) {
+	proto, ok := c.byPort[port]
+	return proto, ok
 }
 
 // NormalizeStatus collapses protocol-specific status strings into a

@@ -56,3 +56,35 @@ func TestLoadRejectsUnknownLogLevel(t *testing.T) {
 		t.Fatal("expected unknown log level error")
 	}
 }
+
+func TestLoadParsesProtocolPorts(t *testing.T) {
+	t.Setenv("PNET_HTTP_PORTS", "8081, 8082")
+	t.Setenv("PNET_POSTGRES_PORTS", "15432")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if got := cfg.Protocols.HTTPPorts; len(got) != 2 || got[0] != 8081 || got[1] != 8082 {
+		t.Fatalf("unexpected http ports: %#v", got)
+	}
+	if got := cfg.Protocols.PostgresPorts; len(got) != 1 || got[0] != 15432 {
+		t.Fatalf("unexpected postgres ports: %#v", got)
+	}
+}
+
+func TestLoadRejectsInvalidPort(t *testing.T) {
+	t.Setenv("PNET_HTTP_PORTS", "0")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid port error (zero not allowed)")
+	}
+}
+
+func TestLoadRejectsDuplicatePort(t *testing.T) {
+	t.Setenv("PNET_KAFKA_PORTS", "9100,9100")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected duplicate port error")
+	}
+}
