@@ -1,0 +1,16 @@
+[Unit]
+Description=Podman network observability metrics (eBPF) for Prometheus
+Documentation=https://github.com/badbuka/pnet-exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PNET_BPF_DIR=/usr/lib/pnet-exporter/bpf
+ExecStart=/usr/bin/pnet-exporter
+Restart=on-failure
+RestartSec=5
+# eBPF attachment requires elevated privileges (see upstream README / container docs): e.g. CAP_BPF, CAP_PERFMON, CAP_NET_ADMIN, CAP_SYS_ADMIN. This unit runs as root by default so those capabilities are available.
+
+[Install]
+WantedBy=multi-user.target

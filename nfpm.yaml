@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://nfpm.goreleaser.com/static/schema.json
+name: pnet-exporter
+arch: amd64
+platform: linux
+version: ${VERSION}
+release: ${RELEASE}
+maintainer: Denis Bukarin
+description: Prometheus exporter for Podman network observability via eBPF
+vendor: Denis Bukarin
+homepage: https://github.com/badbuka/pnet-exporter
+license: MIT
+contents:
+  - src: ./pkg-staging/usr/bin/pnet-exporter
+    dst: /usr/bin/pnet-exporter
+    file_info:
+      mode: 0755
+  - src: ./pkg-staging/usr/lib/pnet-exporter/bpf/tcp_state.bpf.o
+    dst: /usr/lib/pnet-exporter/bpf/tcp_state.bpf.o
+  - src: ./pkg-staging/usr/lib/pnet-exporter/bpf/tcp_retransmit.bpf.o
+    dst: /usr/lib/pnet-exporter/bpf/tcp_retransmit.bpf.o
+  - src: ./pkg-staging/usr/lib/pnet-exporter/bpf/tcp_bytes.bpf.o
+    dst: /usr/lib/pnet-exporter/bpf/tcp_bytes.bpf.o
+  - src: ./pkg-staging/usr/lib/pnet-exporter/bpf/tcp_conntrack.bpf.o
+    dst: /usr/lib/pnet-exporter/bpf/tcp_conntrack.bpf.o
+  - src: ./pkg-staging/usr/lib/pnet-exporter/bpf/l7.bpf.o
+    dst: /usr/lib/pnet-exporter/bpf/l7.bpf.o
+  - src: ./pkg-staging/usr/lib/pnet-exporter/bpf/dns.bpf.o
+    dst: /usr/lib/pnet-exporter/bpf/dns.bpf.o
+  - src: ./pkg-staging/usr/lib/pnet-exporter/bpf/oom.bpf.o
+    dst: /usr/lib/pnet-exporter/bpf/oom.bpf.o
+  - src: ./packaging/pnet-exporter.service
+    dst: /usr/lib/systemd/system/pnet-exporter.service
+  - src: ./LICENSE
+    dst: /usr/share/doc/pnet-exporter/LICENSE
