@@ -1,7 +1,9 @@
 package ebpf
 
 import (
+	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"pnet-exporter/internal/config"
@@ -9,6 +11,11 @@ import (
 	"pnet-exporter/internal/protocol"
 	"pnet-exporter/internal/store"
 )
+
+// dnsStatsInterval controls how often the loader emits an aggregated
+// "dns pipeline stats" log. Exposed as a variable so tests (and a
+// possible future config knob) can override it.
+var dnsStatsInterval = time.Minute
 
 // attachKind identifies how a BPF program is attached to the kernel.
 type attachKind int
@@ -74,14 +81,16 @@ var programs = []programDescriptor{
 		Object: "l7.bpf.o",
 		Programs: []programAttachment{
 			{Program: "l7_tcp_sendmsg", Kind: attachKprobe, Target: "tcp_sendmsg"},
-			{Program: "l7_tcp_recvmsg", Kind: attachKprobe, Target: "tcp_recvmsg"},
+			{Program: "l7_tcp_recvmsg_entry", Kind: attachKprobe, Target: "tcp_recvmsg"},
+			{Program: "l7_tcp_recvmsg", Kind: attachKretprobe, Target: "tcp_recvmsg"},
 		},
 	},
 	{
 		Object: "dns.bpf.o",
 		Programs: []programAttachment{
 			{Program: "dns_udp_sendmsg", Kind: attachKprobe, Target: "udp_sendmsg"},
-			{Program: "dns_udp_recvmsg", Kind: attachKprobe, Target: "udp_recvmsg"},
+			{Program: "dns_udp_recvmsg_entry", Kind: attachKprobe, Target: "udp_recvmsg"},
+			{Program: "dns_udp_recvmsg", Kind: attachKretprobe, Target: "udp_recvmsg"},
 		},
 	},
 	{
@@ -107,7 +116,22 @@ type Loader struct {
 	classifier protocol.Classifier
 	tracker    *protocol.RequestTracker
 
+	dnsStats dnsPipelineStats
+
 	state loaderState
+}
+
+// dnsPipelineStats tracks the lifecycle of DNS ringbuf events from the
+// kernel through the store. Each counter is reset on every aggregate log
+// flush so the values represent activity within the most recent window.
+type dnsPipelineStats struct {
+	recordsReceived  atomic.Uint64
+	nonResponse      atomic.Uint64
+	containerMissing atomic.Uint64
+	parseFailed      atomic.Uint64
+	noQuestions      atomic.Uint64
+	requestsObserved atomic.Uint64
+	mappingsObserved atomic.Uint64
 }
 
 func NewLoader(cfg config.EBPFConfig, classifier protocol.Classifier, identity *identity.Cache, metricStore *store.Store, logger *slog.Logger) *Loader {
@@ -236,17 +260,47 @@ func (l *Loader) handleProtocolResponse(proto store.Protocol, event L7Event, con
 }
 
 func (l *Loader) dispatchDNS(event DNSWireEvent) {
+	l.dnsStats.recordsReceived.Add(1)
+
+	if event.Direction != DirResponse {
+		l.dnsStats.nonResponse.Add(1)
+		l.logger.Debug("dns: skipped non-response event",
+			"direction", uint8(event.Direction),
+			"cgroup_id", event.CgroupID,
+			"pid", event.PID,
+			"payload_len", event.PayloadLen)
+		return
+	}
+
 	container := l.resolveContainer(event.CgroupID, event.PID)
 	if container.ContainerID == "" {
+		l.dnsStats.containerMissing.Add(1)
+		l.logger.Debug("dns: dropped, container not resolved",
+			"cgroup_id", event.CgroupID,
+			"pid", event.PID,
+			"src", event.Tuple.Source(),
+			"dst", event.Tuple.Destination(),
+			"payload_len", event.PayloadLen)
 		return
 	}
-	if event.Direction != DirResponse {
-		return
-	}
+
 	parsed, ok := protocol.ParseDNSResponse(event.Payload)
 	if !ok {
+		l.dnsStats.parseFailed.Add(1)
+		l.logger.Debug("dns: response parse failed",
+			"container_id", container.ContainerID,
+			"payload_len", len(event.Payload))
 		return
 	}
+
+	if len(parsed.Questions) == 0 {
+		l.dnsStats.noQuestions.Add(1)
+		l.logger.Debug("dns: parsed response had no questions",
+			"container_id", container.ContainerID,
+			"answers", len(parsed.Answers),
+			"status", parsed.Status)
+	}
+
 	for _, q := range parsed.Questions {
 		l.store.ObserveDNS(store.DNSEvent{
 			Container:   container,
@@ -255,6 +309,12 @@ func (l *Loader) dispatchDNS(event DNSWireEvent) {
 			Status:      parsed.Status,
 			Duration:    0,
 		})
+		l.dnsStats.requestsObserved.Add(1)
+		l.logger.Debug("dns: observed request",
+			"container_id", container.ContainerID,
+			"domain", q.Name,
+			"type", q.Type,
+			"status", parsed.Status)
 	}
 	for _, ans := range parsed.Answers {
 		l.store.SetIPFQDN(store.IPFQDNMapping{
@@ -263,6 +323,55 @@ func (l *Loader) dispatchDNS(event DNSWireEvent) {
 			FQDN:      ans.Name,
 			Value:     1,
 		})
+		l.dnsStats.mappingsObserved.Add(1)
+	}
+}
+
+// logDNSStats periodically flushes accumulated DNS pipeline counters at
+// info level and warns when two consecutive intervals see zero ringbuf
+// records (a strong signal that dns.bpf.o failed to load or the kprobes
+// never attached).
+func (l *Loader) logDNSStats(ctx context.Context) {
+	if dnsStatsInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(dnsStatsInterval)
+	defer ticker.Stop()
+
+	var emptyTicks int
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			received := l.dnsStats.recordsReceived.Swap(0)
+			nonResp := l.dnsStats.nonResponse.Swap(0)
+			missing := l.dnsStats.containerMissing.Swap(0)
+			parseFail := l.dnsStats.parseFailed.Swap(0)
+			noQ := l.dnsStats.noQuestions.Swap(0)
+			reqObs := l.dnsStats.requestsObserved.Swap(0)
+			mapObs := l.dnsStats.mappingsObserved.Swap(0)
+
+			l.logger.Info("dns pipeline stats",
+				"interval", dnsStatsInterval.String(),
+				"records_received", received,
+				"non_response_skipped", nonResp,
+				"container_missing", missing,
+				"parse_failed", parseFail,
+				"no_questions", noQ,
+				"requests_observed", reqObs,
+				"ip_fqdn_observed", mapObs)
+
+			if received == 0 {
+				emptyTicks++
+				if emptyTicks >= 2 {
+					l.logger.Warn("dns: no DNS ringbuf events observed for two consecutive intervals; confirm dns.bpf.o loaded and udp_sendmsg/udp_recvmsg kprobes attached",
+						"interval", dnsStatsInterval.String())
+				}
+			} else {
+				emptyTicks = 0
+			}
+		}
 	}
 }
 

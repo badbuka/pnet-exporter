@@ -76,9 +76,15 @@ func (l *Loader) Start(ctx context.Context) error {
 			}
 			l.state.links = append(l.state.links, lk)
 			attached++
+			l.logger.Debug("attached BPF program",
+				"object", descriptor.Object,
+				"program", attachment.Program,
+				"target", attachment.Target)
 		}
 
 		if attached == 0 {
+			l.logger.Warn("no programs attached from object; closing collection",
+				"object", descriptor.Object)
 			collection.Close()
 			continue
 		}
@@ -106,6 +112,7 @@ func (l *Loader) Start(ctx context.Context) error {
 
 	go l.consume(ctx)
 	go l.runNATJanitor(ctx)
+	go l.logDNSStats(ctx)
 
 	l.logger.Info("eBPF loader started",
 		"collections", len(l.state.collections),
@@ -195,7 +202,10 @@ func (l *Loader) dispatchRecord(raw []byte) {
 	case EventDNS:
 		event, err := DecodeDNSWireEvent(raw)
 		if err != nil {
-			l.logger.Debug("decode dns event", "error", err, "size", len(raw))
+			l.logger.Warn("decode dns event failed",
+				"error", err,
+				"size", len(raw),
+				"expected_min_size", dnsEventWireSize)
 			return
 		}
 		l.dispatchDNS(event)
