@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+*"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0). Must already exist."
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,24 +19,37 @@ permissions:
 jobs:
   docker:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
     steps:
+      - id: ref
+        run: |
+          case "${GITHUB_EVENT_NAME}" in
+            release)          tag="${GITHUB_REF_NAME}" ;;
+            workflow_dispatch) tag="${{ inputs.tag }}" ;;
+            *)                tag="${GITHUB_REF_NAME}" ;;
+          esac
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ steps.ref.outputs.tag }}
 
       - id: meta
         uses: docker/metadata-action@v5
         with:
           images: badbuka/pnet-exporter
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}},value=${{ steps.ref.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ steps.ref.outputs.tag }}
+            type=raw,value=latest
 
       - id: vars
         run: |
-          echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+          echo "version=${{ steps.ref.outputs.tag }}" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
@@ -56,19 +77,25 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
+      - id: ref
+        run: |
+          case "${GITHUB_EVENT_NAME}" in
+            release)          tag="${GITHUB_REF_NAME}" ;;
+            workflow_dispatch) tag="${{ inputs.tag }}" ;;
+            *)                tag="${GITHUB_REF_NAME}" ;;
+          esac
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - id: vers
-        run: |
-          tag="${GITHUB_REF_NAME}"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          ref: ${{ steps.ref.outputs.tag }}
 
       - id: vars
         run: |
-          echo "version_full=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
@@ -76,7 +103,7 @@ jobs:
       - name: Build image (linux/amd64)
         run: |
           docker build --platform linux/amd64 \
-            --build-arg VERSION="${{ steps.vars.outputs.version_full }}" \
+            --build-arg VERSION="${{ steps.ref.outputs.tag }}" \
             --build-arg COMMIT="${{ steps.vars.outputs.commit }}" \
             -t pnet-exporter-pkg:pack \
             .
@@ -99,7 +126,7 @@ jobs:
 
       - name: Build RPM
         env:
-          VERSION: ${{ steps.vers.outputs.version }}
+          VERSION: ${{ steps.ref.outputs.version }}
           RELEASE: "1"
         run: |
           mkdir -p dist
@@ -107,7 +134,7 @@ jobs:
 
       - name: Build DEB
         env:
-          VERSION: ${{ steps.vers.outputs.version }}
+          VERSION: ${{ steps.ref.outputs.version }}
           RELEASE: "1"
         run: |
           "$(go env GOPATH)/bin/nfpm" package -f nfpm.yaml -p deb -t dist
@@ -115,7 +142,9 @@ jobs:
       - name: Upload packages to GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.ref.outputs.tag }}
           files: |
             dist/*.rpm
             dist/*.deb
           generate_release_notes: true
+          fail_on_unmatched_files: true
