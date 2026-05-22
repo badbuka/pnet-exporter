@@ -21,36 +21,38 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: write
     steps:
       - id: ref
         run: |
           case "${GITHUB_EVENT_NAME}" in
-            release)          tag="${GITHUB_REF_NAME}" ;;
+            release)           tag="${GITHUB_REF_NAME}" ;;
             workflow_dispatch) tag="${{ inputs.tag }}" ;;
-            *)                tag="${GITHUB_REF_NAME}" ;;
+            *)                 tag="${GITHUB_REF_NAME}" ;;
           esac
+          version="${tag#v}"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ steps.ref.outputs.tag }}
 
+      - id: vars
+        run: |
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
       - id: meta
         uses: docker/metadata-action@v5
         with:
           images: badbuka/pnet-exporter
+          flavor: |
+            latest=false
           tags: |
-            type=semver,pattern={{version}},value=${{ steps.ref.outputs.tag }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.tag }}
-            type=semver,pattern={{major}},value=${{ steps.ref.outputs.tag }}
-            type=raw,value=latest
-
-      - id: vars
-        run: |
-          echo "version=${{ steps.ref.outputs.tag }}" >> "$GITHUB_OUTPUT"
-          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+            type=semver,pattern={{version}},value=${{ steps.ref.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.version }}
+            type=semver,pattern={{major}},value=${{ steps.ref.outputs.version }}
+            type=raw,value=latest,enable=${{ !contains(steps.ref.outputs.version, '-') }}
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -68,7 +70,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ steps.vars.outputs.version }}
+            VERSION=${{ steps.ref.outputs.version }}
             COMMIT=${{ steps.vars.outputs.commit }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -77,14 +79,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: write
     steps:
       - id: ref
         run: |
           case "${GITHUB_EVENT_NAME}" in
-            release)          tag="${GITHUB_REF_NAME}" ;;
+            release)           tag="${GITHUB_REF_NAME}" ;;
             workflow_dispatch) tag="${{ inputs.tag }}" ;;
-            *)                tag="${GITHUB_REF_NAME}" ;;
+            *)                 tag="${GITHUB_REF_NAME}" ;;
           esac
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
@@ -103,7 +104,7 @@ jobs:
       - name: Build image (linux/amd64)
         run: |
           docker build --platform linux/amd64 \
-            --build-arg VERSION="${{ steps.ref.outputs.tag }}" \
+            --build-arg VERSION="${{ steps.ref.outputs.version }}" \
             --build-arg COMMIT="${{ steps.vars.outputs.commit }}" \
             -t pnet-exporter-pkg:pack \
             .
