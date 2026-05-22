@@ -15,18 +15,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         clang \
         llvm \
         libbpf-dev \
-        linux-headers-generic \
+        make \
         ca-certificates \
         git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
+COPY Makefile ./
 COPY bpf/ bpf/
 
 # Map Docker's $TARGETARCH to the libbpf/vmlinux.h directory name and to
 # the matching clang -D__TARGET_ARCH_<arch> define. The vmlinux.h files in
 # the upstream repo are symlinks to versioned headers, so we need a real
-# git checkout (rather than `curl`) to resolve them.
+# git checkout (rather than `curl`) to resolve them. After staging
+# vmlinux.h we defer the compile to `make bpf` so the clang flags stay in
+# a single place (the Makefile).
 RUN set -eux; \
     case "${TARGETARCH}" in \
         amd64)  vmlinux_arch=x86_64;  target_arch=x86 ;; \
@@ -36,11 +39,7 @@ RUN set -eux; \
     git clone --depth 1 --branch "${VMLINUX_REF}" "${VMLINUX_REPO}" /tmp/vmlinux; \
     cp -L "/tmp/vmlinux/include/${vmlinux_arch}/vmlinux.h" bpf/vmlinux.h; \
     rm -rf /tmp/vmlinux; \
-    for src in bpf/*.bpf.c; do \
-        clang -O2 -g -target bpf "-D__TARGET_ARCH_${target_arch}" \
-            -I/usr/include/bpf -Ibpf \
-            -c "${src}" -o "${src%.c}.o"; \
-    done
+    make bpf "ARCH=${target_arch}"
 
 # ----------------------------------------------------------------------------
 # Stage 2: build the Go binary.

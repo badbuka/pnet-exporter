@@ -5,7 +5,9 @@ ARCH   ?= x86
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
-CLANG_FLAGS := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) -I/usr/include/bpf -Ibpf
+CLANG_FLAGS := -O2 -g -target bpf -D__TARGET_ARCH_$(ARCH) \
+    -Wall -Werror=implicit-function-declaration \
+    -I/usr/include/bpf -Ibpf
 
 LDFLAGS := -s -w \
     -X pnet-exporter/internal/collector.version=$(VERSION) \
