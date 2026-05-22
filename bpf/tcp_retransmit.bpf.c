@@ -26,6 +26,22 @@ SEC("tracepoint/tcp/tcp_retransmit_skb")
 int handle_tcp_retransmit_skb(struct trace_event_raw_tcp_event_sk_skb___pnet *ctx)
 {
 	struct tcp_event *event;
+	__u16 family = 0, sport = 0, dport = 0;
+	__u8 saddr[4] = {}, daddr[4] = {};
+
+	/*
+	 * Use bpf_probe_read_kernel via BPF_CORE_READ_INTO rather than
+	 * direct ctx-> dereferences. The tracepoint context is declared
+	 * with a CO-RE-relocatable ___pnet flavor; on stricter verifiers
+	 * direct byte loads against the relocated offsets are rejected
+	 * with "dereference of modified ctx ptr". Helper-based reads
+	 * avoid that check entirely.
+	 */
+	BPF_CORE_READ_INTO(&family, ctx, family);
+	BPF_CORE_READ_INTO(&sport, ctx, sport);
+	BPF_CORE_READ_INTO(&dport, ctx, dport);
+	BPF_CORE_READ_INTO(&saddr, ctx, saddr);
+	BPF_CORE_READ_INTO(&daddr, ctx, daddr);
 
 	event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
 	if (!event)
@@ -34,11 +50,11 @@ int handle_tcp_retransmit_skb(struct trace_event_raw_tcp_event_sk_skb___pnet *ct
 	event->kind = PNET_EVENT_TCP_RETRANSMIT;
 	event->cgroup_id = current_cgroup_id();
 	event->pid = bpf_get_current_pid_tgid() >> 32;
-	event->tuple.family = ctx->family;
-	event->tuple.sport = bpf_ntohs(ctx->sport);
-	event->tuple.dport = bpf_ntohs(ctx->dport);
-	__builtin_memcpy(event->tuple.saddr, ctx->saddr, sizeof(ctx->saddr));
-	__builtin_memcpy(event->tuple.daddr, ctx->daddr, sizeof(ctx->daddr));
+	event->tuple.family = family;
+	event->tuple.sport = bpf_ntohs(sport);
+	event->tuple.dport = bpf_ntohs(dport);
+	__builtin_memcpy(event->tuple.saddr, saddr, sizeof(saddr));
+	__builtin_memcpy(event->tuple.daddr, daddr, sizeof(daddr));
 	event->value = 1;
 
 	bpf_ringbuf_submit(event, 0);

@@ -41,7 +41,8 @@ static __always_inline int copy_dns_payload(struct msghdr *msg, __u8 *dst,
 
 	if (BPF_CORE_READ_INTO(&nr, msg, msg_iter.nr_segs) || nr == 0)
 		return -1;
-	if (BPF_CORE_READ_INTO(&iov, msg, msg_iter.__iov) || !iov)
+	iov = pnet_msghdr_iov(msg);
+	if (!iov)
 		return -1;
 
 	__u64 base = 0;

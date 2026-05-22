@@ -103,4 +103,34 @@ static __always_inline __u64 current_cgroup_id(void)
 	return bpf_get_current_cgroup_id();
 }
 
+/*
+ * Pre-6.4 kernels named the iovec pointer in struct iov_iter `iov`;
+ * kernel 6.4 renamed it to `__iov` (commit fcb14cb1bdac). We can't
+ * depend on the build-time vmlinux.h having either name, so declare
+ * CO-RE flavors that expose each one and let bpf_core_field_exists()
+ * pick the right path at load time. libbpf strips the ___suffix when
+ * resolving these against the running kernel's struct iov_iter BTF.
+ */
+struct iov_iter___pnet_old {
+	const struct iovec *iov;
+} __attribute__((preserve_access_index));
+
+struct iov_iter___pnet_new {
+	const struct iovec *__iov;
+} __attribute__((preserve_access_index));
+
+static __always_inline const struct iovec *
+pnet_msghdr_iov(struct msghdr *msg)
+{
+	const struct iovec *iov = NULL;
+	void *it = (void *)&msg->msg_iter;
+
+	if (bpf_core_field_exists(((struct iov_iter___pnet_old *)0)->iov)) {
+		iov = BPF_CORE_READ((struct iov_iter___pnet_old *)it, iov);
+	} else if (bpf_core_field_exists(((struct iov_iter___pnet_new *)0)->__iov)) {
+		iov = BPF_CORE_READ((struct iov_iter___pnet_new *)it, __iov);
+	}
+	return iov;
+}
+
 #endif
