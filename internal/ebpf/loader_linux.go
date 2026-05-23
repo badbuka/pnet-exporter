@@ -17,9 +17,10 @@ import (
 )
 
 type loaderState struct {
-	collections []*ciliumebpf.Collection
-	links       []link.Link
-	reader      *ringbuf.Reader
+	collections  []*ciliumebpf.Collection
+	links        []link.Link
+	reader       *ringbuf.Reader
+	sharedEvents *ciliumebpf.Map
 }
 
 // Start loads and attaches every BPF program in `programs`, opens the shared
@@ -27,12 +28,16 @@ type loaderState struct {
 // them into the store. It returns nil even when individual objects are
 // missing, so a partially-built BPF directory does not prevent the rest of
 // the exporter from starting.
+//
+// Every BPF object declares its own `events SEC(".maps")` ringbuf, but
+// userspace can only read from one. We instantiate the ringbuf once from
+// the first available spec and inject it into every subsequent collection
+// via CollectionOptions.MapReplacements, so all programs publish into the
+// single ringbuf the consume goroutine is bound to.
 func (l *Loader) Start(ctx context.Context) error {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return fmt.Errorf("remove memlock rlimit: %w", err)
 	}
-
-	var sharedRingbuf *ciliumebpf.Map
 
 	for _, descriptor := range programs {
 		path := filepath.Join(l.cfg.BPFDir, descriptor.Object)
@@ -50,7 +55,28 @@ func (l *Loader) Start(ctx context.Context) error {
 			return fmt.Errorf("load collection spec %s: %w", descriptor.Object, err)
 		}
 
-		collection, err := ciliumebpf.NewCollection(spec)
+		if l.state.sharedEvents == nil {
+			if mapSpec, ok := spec.Maps["events"]; ok {
+				m, err := ciliumebpf.NewMap(mapSpec)
+				if err != nil {
+					return fmt.Errorf("create shared events ringbuf from %s: %w",
+						descriptor.Object, err)
+				}
+				l.state.sharedEvents = m
+				l.logger.Debug("created shared events ringbuf",
+					"object", descriptor.Object,
+					"max_entries", mapSpec.MaxEntries)
+			}
+		}
+
+		var opts ciliumebpf.CollectionOptions
+		if l.state.sharedEvents != nil {
+			opts.MapReplacements = map[string]*ciliumebpf.Map{
+				"events": l.state.sharedEvents,
+			}
+		}
+
+		collection, err := ciliumebpf.NewCollectionWithOptions(spec, opts)
 		if err != nil {
 			l.logger.Warn("load BPF collection failed; skipping",
 				"object", descriptor.Object, "error", err)
@@ -90,20 +116,14 @@ func (l *Loader) Start(ctx context.Context) error {
 		}
 
 		l.state.collections = append(l.state.collections, collection)
-
-		if sharedRingbuf == nil {
-			if m, ok := collection.Maps["events"]; ok {
-				sharedRingbuf = m
-			}
-		}
 	}
 
-	if sharedRingbuf == nil {
+	if l.state.sharedEvents == nil {
 		l.logger.Warn("no BPF programs loaded; collector will stay idle")
 		return nil
 	}
 
-	reader, err := ringbuf.NewReader(sharedRingbuf)
+	reader, err := ringbuf.NewReader(l.state.sharedEvents)
 	if err != nil {
 		l.Close()
 		return fmt.Errorf("open ringbuf reader: %w", err)
@@ -114,9 +134,11 @@ func (l *Loader) Start(ctx context.Context) error {
 	go l.runNATJanitor(ctx)
 	go l.logDNSStats(ctx)
 
+	eventsInfo, _ := l.state.sharedEvents.Info()
 	l.logger.Info("eBPF loader started",
 		"collections", len(l.state.collections),
-		"links", len(l.state.links))
+		"links", len(l.state.links),
+		"events_map_id", eventsInfo.ID)
 	return nil
 }
 
@@ -154,6 +176,10 @@ func (l *Loader) Close() {
 		collection.Close()
 	}
 	l.state.collections = nil
+	if l.state.sharedEvents != nil {
+		_ = l.state.sharedEvents.Close()
+		l.state.sharedEvents = nil
+	}
 }
 
 func (l *Loader) consume(ctx context.Context) {
