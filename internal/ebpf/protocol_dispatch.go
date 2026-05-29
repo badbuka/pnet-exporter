@@ -50,6 +50,9 @@ func protocolStatus(proto store.Protocol, payload []byte) string {
 		if status, ok := protocol.ParseHTTPStatus(payload); ok {
 			return status
 		}
+		if status, ok := protocol.ParseHTTP2Status(payload); ok {
+			return status
+		}
 	case store.ProtocolPostgres:
 		return protocol.ParsePostgresStatus(payload)
 	case store.ProtocolRedis:

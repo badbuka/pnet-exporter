@@ -131,7 +131,7 @@ func (l *Loader) Start(ctx context.Context) error {
 	l.state.reader = reader
 
 	go l.consume(ctx)
-	go l.runNATJanitor(ctx)
+	go l.runCacheJanitor(ctx)
 	go l.logDNSStats(ctx)
 
 	eventsInfo, _ := l.state.sharedEvents.Info()
@@ -247,7 +247,10 @@ func (l *Loader) dispatchRecord(raw []byte) {
 	}
 }
 
-func (l *Loader) runNATJanitor(ctx context.Context) {
+// runCacheJanitor periodically ages out the loader's bounded caches: the
+// conntrack NAT mappings and the per-flow protocol verdicts used by content
+// autodiscovery.
+func (l *Loader) runCacheJanitor(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -256,6 +259,7 @@ func (l *Loader) runNATJanitor(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			l.nat.Prune(now)
+			l.flows.Prune(now)
 		}
 	}
 }

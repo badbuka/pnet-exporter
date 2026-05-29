@@ -115,6 +115,7 @@ type Loader struct {
 
 	classifier protocol.Classifier
 	tracker    *protocol.RequestTracker
+	flows      *flowProtocols
 
 	dnsStats dnsPipelineStats
 
@@ -143,6 +144,7 @@ func NewLoader(cfg config.EBPFConfig, classifier protocol.Classifier, identity *
 		nat:        NewNATCache(5 * time.Minute),
 		classifier: classifier,
 		tracker:    protocol.NewRequestTracker(30 * time.Second),
+		flows:      newFlowProtocols(5 * time.Minute),
 	}
 }
 
@@ -205,6 +207,18 @@ func (l *Loader) dispatchL7(event L7Event) {
 	if proto == "" {
 		proto, _ = l.classifier.ProtocolForPort(event.Tuple.SourcePort)
 	}
+	// When no registered port matches, fall back to content-based
+	// autodiscovery. The verdict is cached per flow so multiplexed
+	// protocols (HTTP/2) attribute later, non-self-identifying packets on
+	// the same connection.
+	if proto == "" {
+		if cached, ok := l.flows.Get(event.Tuple); ok {
+			proto = cached
+		} else if sniffed, ok := sniffProtocol(event.Direction, event.Payload); ok {
+			proto = sniffed
+			l.flows.Put(event.Tuple, sniffed)
+		}
+	}
 	if proto == "" {
 		return
 	}
@@ -215,6 +229,32 @@ func (l *Loader) dispatchL7(event L7Event) {
 	case DirResponse:
 		l.handleProtocolResponse(proto, event, container, dst, actual)
 	}
+}
+
+// sniffProtocol inspects an L7 payload to classify a flow whose ports are not
+// registered with the classifier. It currently detects cleartext HTTP/1.x and
+// HTTP/2 (h2c): a request is HTTP if it carries a request line or the HTTP/2
+// connection preface; a response is HTTP if it carries a status line or a
+// decodable HTTP/2 ":status". TLS-wrapped traffic is encrypted and never
+// matches.
+func sniffProtocol(dir Direction, payload []byte) (store.Protocol, bool) {
+	switch dir {
+	case DirRequest:
+		if _, ok := protocol.ParseHTTPRequest(payload); ok {
+			return store.ProtocolHTTP, true
+		}
+		if protocol.IsHTTP2Preface(payload) {
+			return store.ProtocolHTTP, true
+		}
+	case DirResponse:
+		if _, ok := protocol.ParseHTTPStatus(payload); ok {
+			return store.ProtocolHTTP, true
+		}
+		if _, ok := protocol.ParseHTTP2Status(payload); ok {
+			return store.ProtocolHTTP, true
+		}
+	}
+	return "", false
 }
 
 func (l *Loader) handleProtocolRequest(proto store.Protocol, event L7Event, container store.ContainerLabels, dst, actual string) {
