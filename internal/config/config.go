@@ -13,21 +13,21 @@ import (
 )
 
 type Config struct {
-	ListenAddress     string
-	PodmanSocket      string
-	PodmanBinary      string
-	SysFS             string
-	ProcFS            string
-	LogLevel          slog.Level
-	DiscoveryInterval time.Duration
-	ShutdownTimeout   time.Duration
-	ContainerTTL      time.Duration
-	Features          Features
-	Store             StoreConfig
-	Latency           LatencyConfig
-	Delays            DelayConfig
-	EBPF              EBPFConfig
-	Protocols         ProtocolsConfig
+	ListenAddress         string
+	PodmanSocket          string
+	PodmanUserSocketsGlob string
+	SysFS                 string
+	ProcFS                string
+	LogLevel              slog.Level
+	DiscoveryInterval     time.Duration
+	ShutdownTimeout       time.Duration
+	ContainerTTL          time.Duration
+	Features              Features
+	Store                 StoreConfig
+	Latency               LatencyConfig
+	Delays                DelayConfig
+	EBPF                  EBPFConfig
+	Protocols             ProtocolsConfig
 }
 
 // ProtocolsConfig carries operator-supplied TCP port lists that are
@@ -83,7 +83,7 @@ type EBPFConfig struct {
 type envConfig struct {
 	ListenAddress          string        `envconfig:"LISTEN_ADDRESS"                 default:":9108"`
 	PodmanSocket           string        `envconfig:"PODMAN_SOCKET"                  default:"/run/podman/podman.sock"`
-	PodmanBinary           string        `envconfig:"PODMAN_BINARY"                  default:"podman"`
+	PodmanUserSocketsGlob  string        `envconfig:"PODMAN_USER_SOCKETS_GLOB"       default:"/run/user/*/podman/podman.sock"`
 	SysFS                  string        `envconfig:"SYSFS"                          default:"/sys"`
 	ProcFS                 string        `envconfig:"PROCFS"                         default:"/proc"`
 	LogLevel               string        `envconfig:"LOG_LEVEL"                      default:"info"`
@@ -211,15 +211,15 @@ func (e envConfig) toConfig() (Config, error) {
 	}
 
 	cfg := Config{
-		ListenAddress:     e.ListenAddress,
-		PodmanSocket:      e.PodmanSocket,
-		PodmanBinary:      e.PodmanBinary,
-		SysFS:             e.SysFS,
-		ProcFS:            e.ProcFS,
-		LogLevel:          logLevel,
-		DiscoveryInterval: e.DiscoveryInterval,
-		ShutdownTimeout:   e.ShutdownTimeout,
-		ContainerTTL:      e.ContainerTTL,
+		ListenAddress:         e.ListenAddress,
+		PodmanSocket:          e.PodmanSocket,
+		PodmanUserSocketsGlob: e.PodmanUserSocketsGlob,
+		SysFS:                 e.SysFS,
+		ProcFS:                e.ProcFS,
+		LogLevel:              logLevel,
+		DiscoveryInterval:     e.DiscoveryInterval,
+		ShutdownTimeout:       e.ShutdownTimeout,
+		ContainerTTL:          e.ContainerTTL,
 		Features: Features{
 			Network:         e.FeatureNetwork,
 			DNS:             e.FeatureDNS,

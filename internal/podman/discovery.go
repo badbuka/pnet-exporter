@@ -1,14 +1,16 @@
 package podman
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,157 +19,306 @@ import (
 	"pnet-exporter/internal/identity"
 )
 
+// libpodCgroupRe matches the Podman container cgroup marker in a
+// /proc/<pid>/cgroup line. Container IDs are 64 lowercase hex characters and
+// appear as `libpod-<id>.scope` (systemd) or `libpod-<id>` (cgroupfs). The
+// conmon helper uses `libpod-conmon-<id>.scope`, which never matches because
+// "conmon" is not a 64-char hex run.
+var libpodCgroupRe = regexp.MustCompile(`libpod-([0-9a-f]{64})`)
+
+// podmanAPIVersion is the libpod API path prefix. Podman keeps the v4 path
+// stable for backward compatibility even on newer daemons.
+const podmanAPIVersion = "v4.0.0"
+
+// socketDialTimeout bounds both the connect and overall request time when
+// talking to a Podman socket. Unreachable rootless sockets must fail fast so
+// a single discovery tick stays cheap.
+const socketDialTimeout = 3 * time.Second
+
+// socketContextKey carries the target unix socket path through the request
+// context so a single http.Client can fan out across every candidate socket.
+type socketContextKey struct{}
+
 type Discoverer struct {
-	socket string
-	binary string
-	logger *slog.Logger
+	sysFS           string
+	procFS          string
+	rootSocket      string
+	userSocketsGlob string
+	httpClient      *http.Client
+	logger          *slog.Logger
 }
 
-func NewDiscoverer(socket, binary string, logger *slog.Logger) *Discoverer {
-	return &Discoverer{socket: socket, binary: binary, logger: logger}
+// NewDiscoverer builds a discoverer that treats the host /proc as the source
+// of truth for which containers exist and queries every reachable Podman
+// socket only to enrich names and pod IDs.
+func NewDiscoverer(socket, userSocketsGlob, procFS, sysFS string, logger *slog.Logger) *Discoverer {
+	return &Discoverer{
+		sysFS:           sysFS,
+		procFS:          procFS,
+		rootSocket:      socket,
+		userSocketsGlob: userSocketsGlob,
+		httpClient:      newUnixClient(socketDialTimeout),
+		logger:          logger,
+	}
 }
 
+// List scans /proc for container cgroups, enriches the results with names and
+// pod IDs from every reachable Podman socket, and returns the merged set. It
+// never fails when /proc is empty or no socket responds; such containers
+// simply surface without a name and fall back to their ID in metric labels.
 func (d *Discoverer) List(ctx context.Context) ([]identity.Container, error) {
-	containers, err := d.listViaCLI(ctx)
-	if err == nil {
-		return containers, nil
-	}
+	scanned := d.scanProc()
+	names := d.enrich(ctx)
 
-	if _, statErr := os.Stat(d.socket); statErr == nil {
-		d.logger.Debug("podman socket exists but API client is not wired yet", "socket", d.socket)
-	}
-	return nil, err
-}
-
-func (d *Discoverer) listViaCLI(ctx context.Context) ([]identity.Container, error) {
-	cmd := exec.CommandContext(ctx, d.binary, "ps", "--format", "json", "--no-trunc")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("podman ps failed: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-
-	var rows []psRow
-	if err := json.Unmarshal(output, &rows); err != nil {
-		return nil, fmt.Errorf("decode podman ps output: %w", err)
-	}
-
-	containers := make([]identity.Container, 0, len(rows))
-	for _, row := range rows {
-		id := row.ID
-		if id == "" {
-			id = row.UpperID
-		}
-		if id == "" {
-			continue
-		}
-		container, err := d.inspect(ctx, id)
-		if err != nil {
-			d.logger.Warn("podman inspect failed", "container_id", row.ID, "error", err)
-			continue
+	containers := make([]identity.Container, 0, len(scanned))
+	for id, container := range scanned {
+		if meta, ok := names[id]; ok {
+			container.Name = meta.Name
+			container.PodID = meta.Pod
 		}
 		containers = append(containers, container)
 	}
 	return containers, nil
 }
 
-func (d *Discoverer) inspect(ctx context.Context, id string) (identity.Container, error) {
-	cmd := exec.CommandContext(ctx, d.binary, "inspect", id, "--format", "json")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	output, err := cmd.Output()
+// scanProc walks ${procFS}/<pid>/cgroup for every process and groups the
+// discovered Podman containers by their 64-char ID. The lowest PID per
+// container wins, which is the most stable representative of the container's
+// init process for namespace/cgroup attribution.
+func (d *Discoverer) scanProc() map[string]identity.Container {
+	entries, err := os.ReadDir(d.procFS)
 	if err != nil {
-		return identity.Container{}, fmt.Errorf("podman inspect failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+		d.logger.Warn("scan procfs failed", "procfs", d.procFS, "error", err)
+		return nil
 	}
 
-	var rows []inspectRow
-	if err := json.Unmarshal(output, &rows); err != nil {
-		return identity.Container{}, fmt.Errorf("decode podman inspect output: %w", err)
-	}
-	if len(rows) == 0 {
-		return identity.Container{}, fmt.Errorf("podman inspect returned no rows for %s", id)
-	}
-
-	row := rows[0]
-	inspectID := row.ID
-	if inspectID == "" {
-		inspectID = row.UpperID
-	}
-	container := identity.Container{
-		ID:         inspectID,
-		Name:       strings.TrimPrefix(row.Name, "/"),
-		PodID:      row.Pod,
-		PID:        row.State.PID,
-		CgroupPath: row.State.CgroupPath,
-		StartedAt:  parsePodmanTime(row.State.StartedAt),
-	}
-	container.NetNSInode = namespaceInode(container.PID, "net")
-	container.MountNSInode = namespaceInode(container.PID, "mnt")
-	container.CgroupID = cgroupID(container.PID, container.CgroupPath)
-	return container, nil
-}
-
-// cgroupID returns the cgroup-v2 directory inode for the container, which
-// is the same value that BPF programs receive from
-// `bpf_get_current_cgroup_id()`. Lookup proceeds in two stages:
-//
-//  1. If Podman reported a cgroup path, stat /sys/fs/cgroup/<path>.
-//  2. Otherwise, parse /proc/<pid>/cgroup, take the unified
-//     "0::/<path>" line, and stat /sys/fs/cgroup/<path>.
-func cgroupID(pid int, reportedPath string) uint64 {
-	const root = "/sys/fs/cgroup"
-
-	if reportedPath != "" {
-		if id := statInode(filepath.Join(root, reportedPath)); id != 0 {
-			return id
+	lowestPID := make(map[string]int)
+	cgroupPaths := make(map[string]string)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 0 {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(d.procFS, entry.Name(), "cgroup"))
+		if err != nil {
+			continue
+		}
+		id, unifiedPath := parseCgroup(string(data))
+		if id == "" {
+			continue
+		}
+		if cur, ok := lowestPID[id]; !ok || pid < cur {
+			lowestPID[id] = pid
+			cgroupPaths[id] = unifiedPath
 		}
 	}
+
+	containers := make(map[string]identity.Container, len(lowestPID))
+	for id, pid := range lowestPID {
+		cgroupPath := cgroupPaths[id]
+		container := identity.Container{
+			ID:           id,
+			PID:          pid,
+			CgroupPath:   cgroupPath,
+			CgroupID:     d.cgroupID(cgroupPath),
+			NetNSInode:   d.namespaceInode(pid, "net"),
+			MountNSInode: d.namespaceInode(pid, "mnt"),
+			StartedAt:    d.cgroupModTime(cgroupPath),
+		}
+		containers[id] = container
+	}
+	return containers
+}
+
+// parseCgroup extracts the container ID and the cgroup-v2 unified path from
+// the contents of a /proc/<pid>/cgroup file. The ID is taken from any line
+// bearing the libpod marker; the unified path is the "0::" line, used to stat
+// the cgroup directory inode that BPF programs report.
+func parseCgroup(content string) (id, unifiedPath string) {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if id == "" {
+			if m := libpodCgroupRe.FindStringSubmatch(line); m != nil {
+				id = m[1]
+			}
+		}
+		if strings.HasPrefix(line, "0::") {
+			unifiedPath = strings.TrimSpace(strings.TrimPrefix(line, "0::"))
+		}
+	}
+	return id, unifiedPath
+}
+
+// cgroupID returns the cgroup-v2 directory inode for the unified path, which
+// equals the value BPF programs receive from bpf_get_current_cgroup_id().
+func (d *Discoverer) cgroupID(unifiedPath string) uint64 {
+	if unifiedPath == "" {
+		return 0
+	}
+	return statInode(filepath.Join(d.sysFS, "fs", "cgroup", unifiedPath))
+}
+
+// cgroupModTime uses the cgroup directory mtime as a stand-in for the
+// container start time. It avoids parsing /proc/<pid>/stat clock ticks and is
+// good enough for ordering and freshness.
+func (d *Discoverer) cgroupModTime(unifiedPath string) time.Time {
+	if unifiedPath == "" {
+		return time.Time{}
+	}
+	info, err := os.Stat(filepath.Join(d.sysFS, "fs", "cgroup", unifiedPath))
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
+func (d *Discoverer) namespaceInode(pid int, namespace string) uint64 {
 	if pid <= 0 {
 		return 0
 	}
+	return statInode(filepath.Join(d.procFS, strconv.Itoa(pid), "ns", namespace))
+}
 
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
-	if err != nil {
-		return 0
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		// cgroup-v2 lines have the form "0::/some/path".
-		if !strings.HasPrefix(line, "0::") {
+// enrichment holds the human-facing metadata a Podman socket can add to a
+// container that /proc only knows by ID.
+type enrichment struct {
+	Name string
+	Pod  string
+}
+
+// enrich queries every candidate Podman socket and merges their container
+// listings into a map keyed by full container ID. Sockets that are missing or
+// unreachable are logged at debug and skipped.
+func (d *Discoverer) enrich(ctx context.Context) map[string]enrichment {
+	sockets := d.candidateSockets()
+	perSocket := make([][]containerRow, 0, len(sockets))
+	for _, socket := range sockets {
+		rows, err := d.querySocket(ctx, socket)
+		if err != nil {
+			d.logger.Debug("podman socket query failed", "socket", socket, "error", err)
 			continue
 		}
-		path := strings.TrimPrefix(line, "0::")
-		path = strings.TrimSpace(path)
+		d.logger.Debug("podman socket enriched", "socket", socket, "containers", len(rows))
+		perSocket = append(perSocket, rows)
+	}
+	return mergeEnrichment(perSocket)
+}
+
+// candidateSockets returns the deduplicated list of sockets to probe: the
+// configured root socket followed by every match of the user sockets glob.
+func (d *Discoverer) candidateSockets() []string {
+	seen := make(map[string]struct{})
+	var sockets []string
+	add := func(path string) {
 		if path == "" {
-			continue
+			return
 		}
-		return statInode(filepath.Join(root, path))
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		sockets = append(sockets, path)
 	}
-	return 0
-}
 
-type psRow struct {
-	ID      string `json:"Id"`
-	UpperID string `json:"ID"`
-}
-
-type inspectRow struct {
-	ID      string `json:"Id"`
-	UpperID string `json:"ID"`
-	Name    string `json:"Name"`
-	Pod     string `json:"Pod"`
-	State   struct {
-		PID        int    `json:"Pid"`
-		CgroupPath string `json:"CgroupPath"`
-		StartedAt  string `json:"StartedAt"`
-	} `json:"State"`
-}
-
-func namespaceInode(pid int, namespace string) uint64 {
-	if pid <= 0 {
-		return 0
+	add(d.rootSocket)
+	if d.userSocketsGlob != "" {
+		matches, err := filepath.Glob(d.userSocketsGlob)
+		if err != nil {
+			d.logger.Debug("podman user socket glob failed", "glob", d.userSocketsGlob, "error", err)
+		}
+		for _, match := range matches {
+			add(match)
+		}
 	}
-	return statInode(fmt.Sprintf("/proc/%d/ns/%s", pid, namespace))
+	return sockets
+}
+
+// querySocket fetches the running container list from a single Podman socket
+// over HTTP-over-Unix. The socket path travels via the request context so the
+// shared http.Client can target any socket.
+func (d *Discoverer) querySocket(ctx context.Context, socket string) ([]containerRow, error) {
+	ctx = context.WithValue(ctx, socketContextKey{}, socket)
+	url := fmt.Sprintf("http://podman/%s/libpod/containers/json", podmanAPIVersion)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := d.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("podman api returned %s", resp.Status)
+	}
+
+	var rows []containerRow
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		return nil, fmt.Errorf("decode podman api response: %w", err)
+	}
+	return rows, nil
+}
+
+// mergeEnrichment folds per-socket container listings into a single map keyed
+// by full container ID. When the same ID is reported by more than one socket
+// the first occurrence wins.
+func mergeEnrichment(perSocket [][]containerRow) map[string]enrichment {
+	out := make(map[string]enrichment)
+	for _, rows := range perSocket {
+		for _, row := range rows {
+			id := row.ID
+			if id == "" {
+				continue
+			}
+			if _, exists := out[id]; exists {
+				continue
+			}
+			out[id] = enrichment{Name: row.name(), Pod: row.Pod}
+		}
+	}
+	return out
+}
+
+// containerRow mirrors the subset of Podman's libpod containers/json
+// ListContainer payload that we consume.
+type containerRow struct {
+	ID    string   `json:"Id"`
+	Names []string `json:"Names"`
+	Pod   string   `json:"Pod"`
+}
+
+func (r containerRow) name() string {
+	if len(r.Names) > 0 {
+		return strings.TrimPrefix(r.Names[0], "/")
+	}
+	return ""
+}
+
+// newUnixClient builds an http.Client whose transport dials the unix socket
+// named in the request context, allowing one client to serve every candidate
+// socket.
+func newUnixClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				socket, _ := ctx.Value(socketContextKey{}).(string)
+				if socket == "" {
+					return nil, errors.New("no podman socket in request context")
+				}
+				var dialer net.Dialer
+				return dialer.DialContext(ctx, "unix", socket)
+			},
+		},
+	}
 }
 
 func statInode(path string) uint64 {
@@ -180,17 +331,4 @@ func statInode(path string) uint64 {
 		return 0
 	}
 	return stat.Ino
-}
-
-func parsePodmanTime(value string) time.Time {
-	if value == "" {
-		return time.Time{}
-	}
-	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
-		return parsed
-	}
-	if unix, err := strconv.ParseInt(value, 10, 64); err == nil {
-		return time.Unix(unix, 0)
-	}
-	return time.Time{}
 }

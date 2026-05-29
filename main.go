@@ -60,7 +60,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 
 	identityCache := identity.NewCache(cfg.ContainerTTL)
-	discoverer := podman.NewDiscoverer(cfg.PodmanSocket, cfg.PodmanBinary, logger)
+	discoverer := podman.NewDiscoverer(cfg.PodmanSocket, cfg.PodmanUserSocketsGlob, cfg.ProcFS, cfg.SysFS, logger)
 	metricStore := store.New(cfg.Store)
 
 	if err := refreshContainers(ctx, discoverer, identityCache, logger); err != nil {
