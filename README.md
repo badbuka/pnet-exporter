@@ -27,6 +27,12 @@ podman run -d \
   badbuka/pnet-exporter:latest
 ```
 
+`--pid=host` plus the `/proc` mount let the exporter discover containers for
+every user on the host (rootful and rootless). To also enrich *rootless*
+container names and pod IDs, additionally mount the user runtime sockets with
+`-v /run/user:/run/user:ro` (matched by `PNET_PODMAN_USER_SOCKETS_GLOB`);
+without them, rootless containers still appear, just keyed by container ID.
+
 Verify:
 
 ```sh
@@ -62,12 +68,17 @@ All configuration is via environment variables with the `PNET_` prefix.
 
 ### Podman discovery
 
+Container discovery is host-wide: a `/proc` cgroup scan is the source of truth
+for which containers exist (it sees every rootful and rootless user's
+containers), and the Podman REST API is used only to enrich names and pod IDs.
+See [Container discovery](#container-discovery) for details.
+
 | Variable | Default | Description |
 |---|---|---|
-| `PNET_PODMAN_SOCKET` | `/run/podman/podman.sock` | Podman API socket path |
-| `PNET_PODMAN_BINARY` | `podman` | Podman CLI binary (fallback when socket is unavailable) |
-| `PNET_DISCOVERY_INTERVAL` | `10s` | How often the container list is refreshed from Podman |
-| `PNET_CONTAINER_TTL` | `1m` | How long the identity cache retains a container after Podman stops reporting it |
+| `PNET_PODMAN_SOCKET` | `/run/podman/podman.sock` | Root Podman API socket used for name/pod enrichment |
+| `PNET_PODMAN_USER_SOCKETS_GLOB` | `/run/user/*/podman/podman.sock` | Glob of rootless user Podman sockets to also query for enrichment |
+| `PNET_DISCOVERY_INTERVAL` | `10s` | How often the container list is refreshed |
+| `PNET_CONTAINER_TTL` | `1m` | How long the identity cache retains a container after it stops being reported |
 
 ### Feature flags
 
@@ -129,20 +140,21 @@ make test-integration
 ## Architecture
 
 ```
-                +----------------------+      +-------------------------+
-podman ps ----> |  identity.Cache      |<---->|  ebpf.Loader            |
-                |  (PID/cgroup index)  |      |  - tcp_state.bpf        |
-                +----------------------+      |  - tcp_retransmit.bpf   |
-                                              |  - tcp_bytes.bpf        |
-                                              |  - tcp_conntrack.bpf    |
-                                              |  - l7.bpf               |
-                                              |  - dns.bpf              |
-                                              |  - oom.bpf              |
-                                              +-----------+-------------+
-                                                          | ringbuf events
-                +-----------------+        +---------------v---------------+
-                |  store.Store    |<-------|  dispatch / NAT cache         |
-                |  (Prometheus    |        +--------------+----------------+
+ /proc cgroup scan  --+
+ (all containers)     |        +----------------------+      +-------------------------+
+                      +------> |  identity.Cache      |<---->|  ebpf.Loader            |
+ Podman sockets  -----+        |  (PID/cgroup index)  |      |  - tcp_state.bpf        |
+ (name/pod enrich)             +----------------------+      |  - tcp_retransmit.bpf   |
+                                                             |  - tcp_bytes.bpf        |
+                                                             |  - tcp_conntrack.bpf    |
+                                                             |  - l7.bpf               |
+                                                             |  - dns.bpf              |
+                                                             |  - oom.bpf              |
+                                                             +-----------+-------------+
+                                                                         | ringbuf events
+                +-----------------+        +--------------------------------v--------------+
+                |  store.Store    |<-------|  dispatch / NAT cache / flow protocol cache   |
+                |  (Prometheus    |        +--------------+--------------------------------+
                 |   snapshots)    |                       |
                 +--------+--------+                       |
                          |                                v
@@ -161,7 +173,27 @@ podman ps ----> |  identity.Cache      |<---->|  ebpf.Loader            |
 The BPF layer pushes typed events (`tcp_event`, `nat_event`, `l7_event`,
 `dns_event`, `oom_event`) through a single ringbuf. Userspace dispatches by
 the first byte (`kind`) and routes into the store. The NAT cache makes
-post-DNAT destinations available as `actual_destination` labels.
+post-DNAT destinations available as `actual_destination` labels, and the flow
+protocol cache remembers content-sniffed L7 verdicts per connection.
+
+### Container discovery
+
+Discovery runs every `PNET_DISCOVERY_INTERVAL` and has two stages
+(`internal/podman/discovery.go`):
+
+1. **`/proc` scan (source of truth).** Every `${PNET_PROCFS}/<pid>/cgroup` is
+   read and matched against the Podman `libpod-<64-hex-id>` cgroup marker. This
+   surfaces containers for *all* users - rootful and every rootless user -
+   because it does not depend on any single user's Podman state. For each
+   container the lowest PID is chosen and its cgroup inode (matching
+   `bpf_get_current_cgroup_id()`) plus net/mnt namespace inodes are recorded.
+2. **Socket enrichment.** The root socket (`PNET_PODMAN_SOCKET`) and every
+   rootless socket matching `PNET_PODMAN_USER_SOCKETS_GLOB` are queried over the
+   Podman REST API to fill in container `name` and `pod_id`. Unreachable sockets
+   are skipped; a container still appears (keyed by ID) even when no socket
+   reports it, just without a friendly name.
+
+There is no dependency on the `podman` CLI binary.
 
 ## Metrics
 
@@ -192,6 +224,14 @@ Destination label values are bounded per container by
 Driven by the `l7.bpf.o` kprobes on `tcp_sendmsg`/`tcp_recvmsg` plus
 parsers in `internal/protocol/`. Status values are bounded to
 `ok|error|timeout|unknown` (HTTP retains the raw status code).
+
+Flows are classified by destination/source port first. When neither port is
+registered, the captured payload is content-sniffed for HTTP: cleartext
+HTTP/1.x (request/status lines) and HTTP/2 over cleartext (h2c connection
+preface and HPACK `:status`) are detected on *any* port, so HTTP traffic is
+discovered without configuring its port. The verdict is cached per connection
+so multiplexed HTTP/2 frames stay attributed. TLS-wrapped traffic is encrypted
+and is not sniffable.
 
 - `container_http_requests_total`, `container_http_requests_duration_seconds_*`.
 - `container_postgres_queries_total`, `container_postgres_queries_duration_seconds_*`.
@@ -229,9 +269,12 @@ host-level metrics scraped from `/proc`:
 
 ## Design choices
 
-- Discovery is Podman-only (no docker/containerd/CRI-O integrations).
+- Discovery is Podman-only (no docker/containerd/CRI-O integrations), but it
+  covers every user on the host via a `/proc` cgroup scan rather than a single
+  user's `podman ps`.
 - L7 protocols are classified and parsed in Go from captured payloads; BPF
-  only gathers bytes and socket tuples.
+  only gathers bytes and socket tuples. HTTP is additionally autodiscovered by
+  content sniffing on unregistered ports (HTTP/1.x and cleartext HTTP/2).
 - The in-memory metric store uses flat maps keyed by label sets rather than
   a per-container subtree; this keeps the codebase small for Podman-sized
   deployments.
