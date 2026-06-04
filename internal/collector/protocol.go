@@ -20,7 +20,7 @@ func NewProtocolCollector(metricStore *store.Store) *ProtocolCollector {
 			store.ProtocolHTTP: prometheus.NewDesc(
 				"container_http_requests_total",
 				"Total number of outbound HTTP requests made by the container.",
-				appendContainerLabels("destination", "actual_destination", "status"),
+				appendContainerLabels("destination", "actual_destination", "status", "url"),
 				nil,
 			),
 			store.ProtocolPostgres: prometheus.NewDesc(
@@ -46,7 +46,7 @@ func NewProtocolCollector(metricStore *store.Store) *ProtocolCollector {
 			store.ProtocolHTTP: newHistogramDesc(
 				"container_http_requests_duration_seconds",
 				"Histogram of the response time for outbound HTTP requests.",
-				appendContainerLabels("destination", "actual_destination"),
+				appendContainerLabels("destination", "actual_destination", "url"),
 			),
 			store.ProtocolPostgres: newHistogramDesc(
 				"container_postgres_queries_duration_seconds",
@@ -85,17 +85,25 @@ func (c *ProtocolCollector) Collect(ch chan<- prometheus.Metric) {
 		if !ok {
 			continue
 		}
+		extra := []string{series.Destination, series.ActualDestination, series.Status}
+		if series.Protocol == store.ProtocolHTTP {
+			extra = append(extra, series.URL)
+		}
 		ch <- prometheus.MustNewConstMetric(
 			desc,
 			prometheus.CounterValue,
 			series.Value,
-			labelValues(series.Container, series.Destination, series.ActualDestination, series.Status)...,
+			labelValues(series.Container, extra...)...,
 		)
 	}
 	for _, series := range snapshot.ProtocolDur {
 		desc, ok := c.durations[series.Protocol]
 		if !ok {
 			continue
+		}
+		extra := []string{series.Destination, series.ActualDestination}
+		if series.Protocol == store.ProtocolHTTP {
+			extra = append(extra, series.URL)
 		}
 		collectHistogram(
 			ch,
@@ -104,8 +112,7 @@ func (c *ProtocolCollector) Collect(ch chan<- prometheus.Metric) {
 			series.Buckets,
 			series.Sum,
 			series.Count,
-			series.Destination,
-			series.ActualDestination,
+			extra...,
 		)
 	}
 }

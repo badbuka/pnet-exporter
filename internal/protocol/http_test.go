@@ -121,6 +121,32 @@ func TestParseHTTPRequestMethods(t *testing.T) {
 	}
 }
 
+func TestParseHTTPRequestURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{"host and path", "GET /api/users HTTP/1.1\r\nHost: example.com\r\n\r\n", "example.com/api/users"},
+		{"case insensitive host", "GET /api HTTP/1.1\r\nhOsT:  example.com \r\n\r\n", "example.com/api"},
+		{"host after other headers", "GET /api HTTP/1.1\r\nUser-Agent: curl\r\nHost: example.com\r\n\r\n", "example.com/api"},
+		{"no host falls back to path", "GET /api HTTP/1.1\r\nUser-Agent: curl\r\n\r\n", "/api"},
+		{"query string stripped", "GET /search?q=foo&p=1 HTTP/1.1\r\nHost: example.com\r\n\r\n", "example.com/search"},
+		{"host beyond truncation", "GET /api HTTP/1.1\r\nUser-Agent: curl", "/api"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, ok := ParseHTTPRequest([]byte(tc.payload))
+			if !ok {
+				t.Fatalf("ParseHTTPRequest(%q) returned ok=false", tc.payload)
+			}
+			if req.URL != tc.want {
+				t.Fatalf("URL = %q; want %q", req.URL, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseHTTPRequestErrors(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -20,6 +20,7 @@ import (
 	"pnet-exporter/internal/podman"
 	"pnet-exporter/internal/prober"
 	"pnet-exporter/internal/protocol"
+	"pnet-exporter/internal/resources"
 	"pnet-exporter/internal/store"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -95,6 +96,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		go delayReader.Run(ctx)
 	}
 
+	if cfg.Features.ContainerResources {
+		resourceReader := resources.NewReader(cfg.SysFS, identityCache, metricStore, cfg.Resources.Interval, logger)
+		go resourceReader.Run(ctx)
+	}
+
 	go runDiscoveryLoop(ctx, cfg, discoverer, identityCache, logger)
 	go metricStore.RunJanitor(ctx, cfg.Store.CleanupInterval, identityCache.LiveContainerIDs)
 
@@ -106,6 +112,9 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	)
 	if cfg.Features.OOM || cfg.Features.DelayAccounting {
 		reg.MustRegister(collector.NewRuntimeCollector(metricStore))
+	}
+	if cfg.Features.ContainerResources {
+		reg.MustRegister(collector.NewResourcesCollector(metricStore))
 	}
 	if cfg.Features.NodeMetrics {
 		hostname, _ := os.Hostname()

@@ -94,6 +94,7 @@ See [Container discovery](#container-discovery) for details.
 | `PNET_FEATURE_NODE_METRICS` | `true` | Host-level CPU / memory / disk / network metrics from `/proc` |
 | `PNET_FEATURE_DELAY_ACCOUNTING` | `true` | Per-container CPU and disk I/O wait counters from `/proc/<pid>/schedstat` |
 | `PNET_FEATURE_OOM` | `true` | Container OOM-kill counter |
+| `PNET_FEATURE_CONTAINER_RESOURCES` | `true` | Per-container CPU / memory / block-I/O / PSI pressure from cgroup v2 |
 
 ### Metrics tuning
 
@@ -103,6 +104,7 @@ See [Container discovery](#container-discovery) for details.
 | `PNET_CLEANUP_INTERVAL` | `1m` | How often the janitor prunes expired series |
 | `PNET_MAX_DESTINATIONS_PER_CONTAINER` | `512` | Max distinct destination labels per container; excess values become `~other` |
 | `PNET_MAX_FQDNS_PER_CONTAINER` | `100` | Max distinct FQDN labels per container; excess values become `~other` |
+| `PNET_MAX_URLS_PER_CONTAINER` | `200` | Max distinct HTTP `url` labels per container; excess values become `~other` |
 | `PNET_DURATION_BUCKETS` | `0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10` | Histogram bucket boundaries for L7 request durations (seconds, comma-separated) |
 | `PNET_DNS_DURATION_BUCKETS` | `0.001,0.0025,0.005,0.01,0.025,0.05,0.1,0.25,0.5` | Histogram bucket boundaries for DNS request durations (seconds, comma-separated) |
 
@@ -119,6 +121,12 @@ See [Container discovery](#container-discovery) for details.
 | Variable | Default | Description |
 |---|---|---|
 | `PNET_DELAY_INTERVAL` | `15s` | How often `/proc/<pid>/schedstat` is read per container |
+
+### Container resources (`PNET_FEATURE_CONTAINER_RESOURCES=true`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `PNET_RESOURCES_INTERVAL` | `15s` | How often cgroup v2 resource files are read per container |
 
 ## Building
 
@@ -146,6 +154,7 @@ make test-integration
  Podman sockets  -----+        |  (PID/cgroup index)  |      |  - tcp_state.bpf        |
  (name/pod enrich)             +----------------------+      |  - tcp_retransmit.bpf   |
                                                              |  - tcp_bytes.bpf        |
+                                                             |  - tcp_inbound.bpf      |
                                                              |  - tcp_conntrack.bpf    |
                                                              |  - l7.bpf               |
                                                              |  - dns.bpf              |
@@ -217,6 +226,26 @@ Destination label values are bounded per container by
   `tcp_cleanup_rbuf`.
 - `container_net_latency_seconds` gauge: ICMP RTT measured inside the
   container's network namespace.
+
+#### Inbound (server-side) TCP
+
+Driven by `tcp_inbound.bpf.o`, which tracks sockets returned by
+`inet_csk_accept` (connections a server inside the container accepted).
+These metrics carry a `source` label holding the remote client endpoint
+(`IP:port`), bounded per container by `PNET_MAX_DESTINATIONS_PER_CONTAINER`
+(overflow becomes `~other`). They are additive: server-side bytes also
+still appear in the peer-labeled `container_net_tcp_bytes_*_total` totals
+above; the inbound series provide the disambiguated server view by client.
+
+- `container_net_tcp_inbound_accepts_total` counter: inbound connections
+  accepted, sourced from kretprobe `inet_csk_accept`.
+- `container_net_tcp_inbound_active_connections` gauge: incremented on
+  accept and decremented on `tcp_close` for accepted sockets.
+- `container_net_tcp_inbound_bytes_sent_total` counter: bytes the server
+  sent on accepted connections.
+- `container_net_tcp_inbound_bytes_received_total` counter: bytes the
+  server received on accepted connections.
+
 - `ip_to_fqdn` gauge: labels `ip`, `fqdn`.
 
 ### Application protocols (L7)
@@ -234,6 +263,13 @@ so multiplexed HTTP/2 frames stay attributed. TLS-wrapped traffic is encrypted
 and is not sniffable.
 
 - `container_http_requests_total`, `container_http_requests_duration_seconds_*`.
+  These carry an extra `url` label holding the full request URL (the `Host`
+  header joined with the request path, e.g. `example.com/api`; the path alone
+  when no `Host` header is present). The query string is stripped, and label
+  values are bounded per container by `PNET_MAX_URLS_PER_CONTAINER` (overflow
+  becomes `~other`). URL extraction is best-effort cleartext HTTP/1.x only:
+  HTTP/2 (h2c) requests and any `Host` header pushed past the 256-byte payload
+  capture yield an empty `url`.
 - `container_postgres_queries_total`, `container_postgres_queries_duration_seconds_*`.
 - `container_redis_queries_total`, `container_redis_queries_duration_seconds_*`.
 - `container_kafka_requests_total`, `container_kafka_requests_duration_seconds_*`.
@@ -253,6 +289,33 @@ small DNS parser in `internal/protocol/dns.go`.
   `/proc/<pid>/schedstat` (runqueue wait time per cgroup).
 - `container_resources_disk_delay_seconds_total`: derived from
   `delayacct_blkio_ticks` in `/proc/<pid>/stat`.
+
+#### Resource utilization (`PNET_FEATURE_CONTAINER_RESOURCES=true`)
+
+Per-container CPU, memory, block-I/O and PSI pressure read from the
+cgroup v2 control files under `${PNET_SYSFS}/fs/cgroup/<cgroup-path>`
+every `PNET_RESOURCES_INTERVAL`.
+
+- CPU (`cpu.stat`): `container_resources_cpu_usage_seconds_total`,
+  `container_resources_cpu_user_seconds_total`,
+  `container_resources_cpu_system_seconds_total`,
+  `container_resources_cpu_periods_total`,
+  `container_resources_cpu_throttled_periods_total`,
+  `container_resources_cpu_throttled_seconds_total`.
+- Memory: `container_resources_memory_usage_bytes` (`memory.current`),
+  `container_resources_memory_peak_bytes` (`memory.peak`, when present),
+  `container_resources_memory_limit_bytes` (`memory.max`, omitted when
+  unlimited).
+- Block I/O (`io.stat`, summed across devices):
+  `container_resources_io_read_bytes_total`,
+  `container_resources_io_written_bytes_total`,
+  `container_resources_io_reads_total`,
+  `container_resources_io_writes_total`.
+- PSI pressure (`cpu.pressure`, `memory.pressure`, `io.pressure`):
+  `container_resources_cpu_pressure_seconds_total`,
+  `container_resources_memory_pressure_seconds_total`,
+  `container_resources_io_pressure_seconds_total`, each with a `level`
+  label of `some` or `full` carrying the cumulative stall `total`.
 
 ### Node
 

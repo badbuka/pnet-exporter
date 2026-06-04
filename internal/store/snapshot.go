@@ -16,6 +16,13 @@ type Snapshot struct {
 	ProtocolDur   []ProtocolHistogram
 	OOMKills      []OOMSeries
 	Delays        []DelaySeries
+
+	InboundAccepts       []SourceSeries
+	InboundActive        []SourceSeries
+	InboundBytesSent     []SourceSeries
+	InboundBytesReceived []SourceSeries
+
+	ResourceUsage []ResourceUsageSample
 }
 
 type ListenSeries struct {
@@ -72,6 +79,7 @@ type ProtocolSeries struct {
 	Destination       string
 	ActualDestination string
 	Status            string
+	URL               string
 	Value             float64
 }
 
@@ -80,6 +88,7 @@ type ProtocolHistogram struct {
 	Container         ContainerLabels
 	Destination       string
 	ActualDestination string
+	URL               string
 	Buckets           []Bucket
 	Sum               float64
 	Count             uint64
@@ -94,6 +103,14 @@ type DelaySeries struct {
 	Container       ContainerLabels
 	CPUDelaySeconds float64
 	IODelaySeconds  float64
+}
+
+// SourceSeries is a per-container series keyed by the remote client
+// endpoint (`source` label) for inbound traffic metrics.
+type SourceSeries struct {
+	Container ContainerLabels
+	Source    string
+	Value     float64
 }
 
 type Bucket struct {

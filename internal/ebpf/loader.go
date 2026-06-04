@@ -72,6 +72,15 @@ var programs = []programDescriptor{
 		},
 	},
 	{
+		Object: "tcp_inbound.bpf.o",
+		Programs: []programAttachment{
+			{Program: "handle_inet_csk_accept", Kind: attachKretprobe, Target: "inet_csk_accept"},
+			{Program: "handle_inbound_sendmsg", Kind: attachKprobe, Target: "tcp_sendmsg"},
+			{Program: "handle_inbound_cleanup_rbuf", Kind: attachKprobe, Target: "tcp_cleanup_rbuf"},
+			{Program: "handle_inbound_close", Kind: attachKprobe, Target: "tcp_close"},
+		},
+	},
+	{
 		Object: "tcp_conntrack.bpf.o",
 		Programs: []programAttachment{
 			{Program: "handle_conntrack_confirm", Kind: attachKprobe, Target: "__nf_conntrack_confirm"},
@@ -116,6 +125,7 @@ type Loader struct {
 	classifier protocol.Classifier
 	tracker    *protocol.RequestTracker
 	flows      *flowProtocols
+	urls       *requestURLs
 
 	dnsStats dnsPipelineStats
 
@@ -145,6 +155,7 @@ func NewLoader(cfg config.EBPFConfig, classifier protocol.Classifier, identity *
 		classifier: classifier,
 		tracker:    protocol.NewRequestTracker(30 * time.Second),
 		flows:      newFlowProtocols(5 * time.Minute),
+		urls:       newRequestURLs(30 * time.Second),
 	}
 }
 
@@ -179,6 +190,16 @@ func (l *Loader) dispatchTCP(event TCPEvent) {
 		l.store.AddBytesSent(storeEvent)
 	case EventTCPBytesReceived:
 		l.store.AddBytesReceived(storeEvent)
+	case EventTCPInboundAccept:
+		inbound := event.ToInboundStoreEvent(container)
+		l.store.IncInboundAccept(inbound)
+		l.store.IncInboundActive(inbound)
+	case EventTCPInboundClose:
+		l.store.DecInboundActive(event.ToInboundStoreEvent(container))
+	case EventTCPInboundBytesSent:
+		l.store.AddInboundBytesSent(event.ToInboundStoreEvent(container))
+	case EventTCPInboundBytesRecv:
+		l.store.AddInboundBytesReceived(event.ToInboundStoreEvent(container))
 	default:
 		l.logger.Debug("unhandled tcp event kind", "kind", uint8(event.Kind))
 	}
@@ -270,6 +291,16 @@ func (l *Loader) handleProtocolRequest(proto store.Protocol, event L7Event, cont
 		Protocol:          proto,
 	}
 	l.tracker.Start(key, time.Now())
+
+	if proto == store.ProtocolHTTP {
+		if request, ok := protocol.ParseHTTPRequest(event.Payload); ok {
+			l.urls.Put(urlFlowKey{
+				containerID:       container.ContainerID,
+				destination:       dst,
+				actualDestination: actual,
+			}, request.URL)
+		}
+	}
 }
 
 func (l *Loader) handleProtocolResponse(proto store.Protocol, event L7Event, container store.ContainerLabels, dst, actual string) {
@@ -289,12 +320,22 @@ func (l *Loader) handleProtocolResponse(proto store.Protocol, event L7Event, con
 		duration = event.Elapsed
 	}
 
+	url := ""
+	if proto == store.ProtocolHTTP {
+		url, _ = l.urls.Take(urlFlowKey{
+			containerID:       container.ContainerID,
+			destination:       dst,
+			actualDestination: actual,
+		})
+	}
+
 	status := protocolStatus(proto, event.Payload)
 	l.store.ObserveProtocol(store.ProtocolEvent{
 		Protocol:  proto,
 		Container: container,
 		Endpoint:  store.Endpoint{Destination: dst, ActualDestination: actual},
 		Status:    protocol.NormalizeStatus(proto, status),
+		URL:       url,
 		Duration:  duration,
 	})
 }

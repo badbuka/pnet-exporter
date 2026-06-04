@@ -204,7 +204,8 @@ func (l *Loader) dispatchRecord(raw []byte) {
 	switch kind {
 	case EventTCPListen, EventTCPSuccessfulConnect, EventTCPFailedConnect,
 		EventTCPRetransmit, EventTCPBytesSent, EventTCPBytesReceived,
-		EventTCPClose:
+		EventTCPClose, EventTCPInboundAccept, EventTCPInboundClose,
+		EventTCPInboundBytesSent, EventTCPInboundBytesRecv:
 		event, err := DecodeTCPEvent(raw)
 		if err != nil {
 			l.logger.Debug("decode tcp event", "error", err, "size", len(raw))
@@ -260,6 +261,7 @@ func (l *Loader) runCacheJanitor(ctx context.Context) {
 		case now := <-ticker.C:
 			l.nat.Prune(now)
 			l.flows.Prune(now)
+			l.urls.Prune(now)
 		}
 	}
 }

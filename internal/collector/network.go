@@ -24,10 +24,16 @@ type NetworkCollector struct {
 	tcpActive      *prometheus.Desc
 	tcpBytesSent   *prometheus.Desc
 	tcpBytesRecv   *prometheus.Desc
-	latency        *prometheus.Desc
-	dnsRequests    *prometheus.Desc
-	dnsDuration    histogramDesc
-	ipToFQDN       *prometheus.Desc
+
+	tcpInboundAccepts   *prometheus.Desc
+	tcpInboundActive    *prometheus.Desc
+	tcpInboundBytesSent *prometheus.Desc
+	tcpInboundBytesRecv *prometheus.Desc
+
+	latency     *prometheus.Desc
+	dnsRequests *prometheus.Desc
+	dnsDuration histogramDesc
+	ipToFQDN    *prometheus.Desc
 }
 
 func NewNetworkCollector(store *store.Store) *NetworkCollector {
@@ -76,6 +82,30 @@ func NewNetworkCollector(store *store.Store) *NetworkCollector {
 			endpointLabels,
 			nil,
 		),
+		tcpInboundAccepts: prometheus.NewDesc(
+			"container_net_tcp_inbound_accepts_total",
+			"Total number of inbound TCP connections accepted by the container, by remote client source.",
+			appendContainerLabels("source"),
+			nil,
+		),
+		tcpInboundActive: prometheus.NewDesc(
+			"container_net_tcp_inbound_active_connections",
+			"Number of active inbound (accepted) TCP connections, by remote client source.",
+			appendContainerLabels("source"),
+			nil,
+		),
+		tcpInboundBytesSent: prometheus.NewDesc(
+			"container_net_tcp_inbound_bytes_sent_total",
+			"Total number of bytes the container sent on inbound (accepted) connections, by remote client source.",
+			appendContainerLabels("source"),
+			nil,
+		),
+		tcpInboundBytesRecv: prometheus.NewDesc(
+			"container_net_tcp_inbound_bytes_received_total",
+			"Total number of bytes the container received on inbound (accepted) connections, by remote client source.",
+			appendContainerLabels("source"),
+			nil,
+		),
 		latency: prometheus.NewDesc(
 			"container_net_latency_seconds",
 			"Round-trip time between the container and a remote IP.",
@@ -111,6 +141,10 @@ func (c *NetworkCollector) Describe(ch chan<- *prometheus.Desc) {
 		c.tcpActive,
 		c.tcpBytesSent,
 		c.tcpBytesRecv,
+		c.tcpInboundAccepts,
+		c.tcpInboundActive,
+		c.tcpInboundBytesSent,
+		c.tcpInboundBytesRecv,
 		c.latency,
 		c.dnsRequests,
 		c.ipToFQDN,
@@ -145,6 +179,18 @@ func (c *NetworkCollector) Collect(ch chan<- prometheus.Metric) {
 	for _, series := range snapshot.BytesReceived {
 		ch <- endpointMetric(c.tcpBytesRecv, prometheus.CounterValue, series)
 	}
+	for _, series := range snapshot.InboundAccepts {
+		ch <- sourceMetric(c.tcpInboundAccepts, prometheus.CounterValue, series)
+	}
+	for _, series := range snapshot.InboundActive {
+		ch <- sourceMetric(c.tcpInboundActive, prometheus.GaugeValue, series)
+	}
+	for _, series := range snapshot.InboundBytesSent {
+		ch <- sourceMetric(c.tcpInboundBytesSent, prometheus.CounterValue, series)
+	}
+	for _, series := range snapshot.InboundBytesReceived {
+		ch <- sourceMetric(c.tcpInboundBytesRecv, prometheus.CounterValue, series)
+	}
 	for _, series := range snapshot.Latency {
 		ch <- prometheus.MustNewConstMetric(c.latency, prometheus.GaugeValue, series.Value, labelValues(series.Container, series.DestinationIP)...)
 	}
@@ -161,6 +207,10 @@ func (c *NetworkCollector) Collect(ch chan<- prometheus.Metric) {
 
 func endpointMetric(desc *prometheus.Desc, valueType prometheus.ValueType, series store.EndpointSeries) prometheus.Metric {
 	return prometheus.MustNewConstMetric(desc, valueType, series.Value, labelValues(series.Container, series.Destination, series.ActualDestination)...)
+}
+
+func sourceMetric(desc *prometheus.Desc, valueType prometheus.ValueType, series store.SourceSeries) prometheus.Metric {
+	return prometheus.MustNewConstMetric(desc, valueType, series.Value, labelValues(series.Container, series.Source)...)
 }
 
 type histogramDesc struct {
