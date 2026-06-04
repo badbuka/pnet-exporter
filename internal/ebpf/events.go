@@ -28,6 +28,10 @@ const (
 	EventConntrackNAT         EventKind = 11
 	EventL7                   EventKind = 12
 	EventOOM                  EventKind = 13
+	EventTCPInboundAccept     EventKind = 14
+	EventTCPInboundClose      EventKind = 15
+	EventTCPInboundBytesSent  EventKind = 16
+	EventTCPInboundBytesRecv  EventKind = 17
 )
 
 // Direction matches PNET_DIR_* constants in bpf/events.h.
@@ -142,6 +146,19 @@ func (e TCPEvent) ToStoreEvent(container store.ContainerLabels, actualDst string
 		},
 		Bytes: e.Value,
 		Value: float64(e.Value),
+	}
+}
+
+// ToInboundStoreEvent normalises an inbound (accepted server socket) event
+// for the store layer. For inbound sockets the remote peer is the client,
+// which the kernel places in the destination half of the tuple
+// (skc_daddr:skc_dport), so it is exposed under the `source` label.
+func (e TCPEvent) ToInboundStoreEvent(container store.ContainerLabels) store.InboundEvent {
+	return store.InboundEvent{
+		Container: container,
+		Source:    e.Tuple.Destination(),
+		Bytes:     e.Value,
+		Value:     float64(e.Value),
 	}
 }
 

@@ -21,6 +21,10 @@
 #define PNET_EVENT_CONNTRACK_NAT          11
 #define PNET_EVENT_L7                     12
 #define PNET_EVENT_OOM                    13
+#define PNET_EVENT_TCP_INBOUND_ACCEPT     14
+#define PNET_EVENT_TCP_INBOUND_CLOSE      15
+#define PNET_EVENT_TCP_INBOUND_BYTES_SENT 16
+#define PNET_EVENT_TCP_INBOUND_BYTES_RECEIVED 17
 
 #define PNET_DIR_REQUEST                   0
 #define PNET_DIR_RESPONSE                  1

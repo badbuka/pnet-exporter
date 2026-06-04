@@ -46,31 +46,48 @@ type Store struct {
 	protocolDur   map[protocolDurationKey]histogramValue
 	oomKills      map[oomKey]seriesValue
 	delays        map[delayKey]delayValue
+	resourceUsage map[delayKey]resourceUsageValue
+
+	inboundAccepts       map[sourceKey]seriesValue
+	inboundActive        map[sourceKey]seriesValue
+	inboundBytesSent     map[sourceKey]seriesValue
+	inboundBytesReceived map[sourceKey]seriesValue
 
 	destinationSeen map[string]map[string]struct{}
 	fqdnSeen        map[string]map[string]struct{}
+	urlSeen         map[string]map[string]struct{}
+	sourceSeen      map[string]map[string]struct{}
 }
 
 func New(cfg config.StoreConfig) *Store {
 	return &Store{
-		cfg:             cfg,
-		listens:         make(map[listenKey]seriesValue),
-		successful:      make(map[endpointKey]seriesValue),
-		failed:          make(map[failedKey]seriesValue),
-		retransmits:     make(map[endpointKey]seriesValue),
-		active:          make(map[endpointKey]seriesValue),
-		bytesSent:       make(map[endpointKey]seriesValue),
-		bytesReceived:   make(map[endpointKey]seriesValue),
-		latency:         make(map[latencyKey]seriesValue),
-		dnsRequests:     make(map[dnsKey]seriesValue),
-		dnsDurations:    make(map[dnsDurationKey]histogramValue),
-		ipToFQDN:        make(map[ipFQDNKey]seriesValue),
-		protocol:        make(map[protocolKey]seriesValue),
-		protocolDur:     make(map[protocolDurationKey]histogramValue),
-		oomKills:        make(map[oomKey]seriesValue),
-		delays:          make(map[delayKey]delayValue),
+		cfg:           cfg,
+		listens:       make(map[listenKey]seriesValue),
+		successful:    make(map[endpointKey]seriesValue),
+		failed:        make(map[failedKey]seriesValue),
+		retransmits:   make(map[endpointKey]seriesValue),
+		active:        make(map[endpointKey]seriesValue),
+		bytesSent:     make(map[endpointKey]seriesValue),
+		bytesReceived: make(map[endpointKey]seriesValue),
+		latency:       make(map[latencyKey]seriesValue),
+		dnsRequests:   make(map[dnsKey]seriesValue),
+		dnsDurations:  make(map[dnsDurationKey]histogramValue),
+		ipToFQDN:      make(map[ipFQDNKey]seriesValue),
+		protocol:      make(map[protocolKey]seriesValue),
+		protocolDur:   make(map[protocolDurationKey]histogramValue),
+		oomKills:      make(map[oomKey]seriesValue),
+		delays:        make(map[delayKey]delayValue),
+		resourceUsage: make(map[delayKey]resourceUsageValue),
+
+		inboundAccepts:       make(map[sourceKey]seriesValue),
+		inboundActive:        make(map[sourceKey]seriesValue),
+		inboundBytesSent:     make(map[sourceKey]seriesValue),
+		inboundBytesReceived: make(map[sourceKey]seriesValue),
+
 		destinationSeen: make(map[string]map[string]struct{}),
 		fqdnSeen:        make(map[string]map[string]struct{}),
+		urlSeen:         make(map[string]map[string]struct{}),
+		sourceSeen:      make(map[string]map[string]struct{}),
 	}
 }
 
@@ -217,12 +234,14 @@ func (s *Store) ObserveProtocol(event ProtocolEvent) {
 		Destination:       s.boundDestination(event.Container.ContainerID, event.Endpoint.Destination),
 		ActualDestination: s.boundDestination(event.Container.ContainerID, event.Endpoint.ActualDestination),
 	}
+	url := s.boundURL(event.Container.ContainerID, event.URL)
 	key := protocolKey{
 		protocol:          event.Protocol,
 		container:         event.Container,
 		destination:       endpoint.Destination,
 		actualDestination: endpoint.ActualDestination,
 		status:            event.Status,
+		url:               url,
 	}
 	s.protocol[key] = seriesValue{value: s.protocol[key].value + 1, updatedAt: time.Now()}
 
@@ -232,6 +251,7 @@ func (s *Store) ObserveProtocol(event ProtocolEvent) {
 			container:         event.Container,
 			destination:       endpoint.Destination,
 			actualDestination: endpoint.ActualDestination,
+			url:               url,
 		}
 		hist := s.protocolDur[histKey]
 		hist.observe(event.Duration.Seconds(), s.cfg.DurationBuckets)
@@ -265,6 +285,64 @@ func (s *Store) RecordResourceDelay(sample ResourceDelaySample) {
 	}
 }
 
+// RecordResourceUsage stores the latest cgroup v2 resource-utilization
+// reading for a container. Counter fields must be the kernel's running
+// totals; gauge fields are the instantaneous value at sample time.
+func (s *Store) RecordResourceUsage(sample ResourceUsageSample) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := delayKey{container: sample.Container}
+	s.resourceUsage[key] = resourceUsageValue{sample: sample, updatedAt: time.Now()}
+}
+
+// IncInboundAccept increments the inbound accept counter for the
+// container/source pair.
+func (s *Store) IncInboundAccept(event InboundEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.sourceKey(event.Container, event.Source)
+	s.incSource(s.inboundAccepts, key, 1)
+}
+
+// IncInboundActive bumps the inbound active-connection gauge.
+func (s *Store) IncInboundActive(event InboundEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.sourceKey(event.Container, event.Source)
+	v := s.inboundActive[key]
+	v.value++
+	v.updatedAt = time.Now()
+	s.inboundActive[key] = v
+}
+
+// DecInboundActive clamps to zero so a close observed before its matching
+// accept cannot drive the gauge negative.
+func (s *Store) DecInboundActive(event InboundEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.sourceKey(event.Container, event.Source)
+	v := s.inboundActive[key]
+	if v.value > 0 {
+		v.value--
+	}
+	v.updatedAt = time.Now()
+	s.inboundActive[key] = v
+}
+
+func (s *Store) AddInboundBytesSent(event InboundEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.sourceKey(event.Container, event.Source)
+	s.incSource(s.inboundBytesSent, key, float64(event.Bytes))
+}
+
+func (s *Store) AddInboundBytesReceived(event InboundEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.sourceKey(event.Container, event.Source)
+	s.incSource(s.inboundBytesReceived, key, float64(event.Bytes))
+}
+
 func (s *Store) Snapshot() Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -285,6 +363,13 @@ func (s *Store) Snapshot() Snapshot {
 		ProtocolDur:   make([]ProtocolHistogram, 0, len(s.protocolDur)),
 		OOMKills:      make([]OOMSeries, 0, len(s.oomKills)),
 		Delays:        make([]DelaySeries, 0, len(s.delays)),
+
+		InboundAccepts:       make([]SourceSeries, 0, len(s.inboundAccepts)),
+		InboundActive:        make([]SourceSeries, 0, len(s.inboundActive)),
+		InboundBytesSent:     make([]SourceSeries, 0, len(s.inboundBytesSent)),
+		InboundBytesReceived: make([]SourceSeries, 0, len(s.inboundBytesReceived)),
+
+		ResourceUsage: make([]ResourceUsageSample, 0, len(s.resourceUsage)),
 	}
 	for key, value := range s.listens {
 		snapshot.Listens = append(snapshot.Listens, ListenSeries{Container: key.container, ListenAddr: key.listenAddr, Proxy: key.proxy, Value: value.value})
@@ -326,6 +411,7 @@ func (s *Store) Snapshot() Snapshot {
 			Destination:       key.destination,
 			ActualDestination: key.actualDestination,
 			Status:            key.status,
+			URL:               key.url,
 			Value:             value.value,
 		})
 	}
@@ -335,6 +421,7 @@ func (s *Store) Snapshot() Snapshot {
 			Container:         key.container,
 			Destination:       key.destination,
 			ActualDestination: key.actualDestination,
+			URL:               key.url,
 			Buckets:           value.SortedBuckets(),
 			Sum:               value.sum,
 			Count:             value.count,
@@ -350,6 +437,21 @@ func (s *Store) Snapshot() Snapshot {
 			IODelaySeconds:  value.io,
 		})
 	}
+	for key, value := range s.inboundAccepts {
+		snapshot.InboundAccepts = append(snapshot.InboundAccepts, sourceSeries(key, value))
+	}
+	for key, value := range s.inboundActive {
+		snapshot.InboundActive = append(snapshot.InboundActive, sourceSeries(key, value))
+	}
+	for key, value := range s.inboundBytesSent {
+		snapshot.InboundBytesSent = append(snapshot.InboundBytesSent, sourceSeries(key, value))
+	}
+	for key, value := range s.inboundBytesReceived {
+		snapshot.InboundBytesReceived = append(snapshot.InboundBytesReceived, sourceSeries(key, value))
+	}
+	for _, value := range s.resourceUsage {
+		snapshot.ResourceUsage = append(snapshot.ResourceUsage, value.sample)
+	}
 	return snapshot
 }
 
@@ -362,9 +464,11 @@ func (s *Store) Prune(now time.Time, liveContainers LiveContainersFunc) {
 	defer s.mu.Unlock()
 
 	pruneSeries(s.active, now, s.cfg.MetricTTL)
+	pruneSeries(s.inboundActive, now, s.cfg.MetricTTL)
 	pruneSeries(s.latency, now, s.cfg.MetricTTL)
 	pruneSeries(s.ipToFQDN, now, s.cfg.MetricTTL)
 	pruneDelays(s.delays, now, s.cfg.MetricTTL)
+	pruneResourceUsage(s.resourceUsage, now, s.cfg.MetricTTL)
 	pruneHistograms(s.dnsDurations, now, s.cfg.MetricTTL)
 	pruneHistograms(s.protocolDur, now, s.cfg.MetricTTL)
 
@@ -426,6 +530,21 @@ func (s *Store) Prune(now time.Time, liveContainers LiveContainersFunc) {
 			delete(s.oomKills, k)
 		}
 	}
+	for k := range s.inboundAccepts {
+		if dropContainer(k.container.ContainerID) {
+			delete(s.inboundAccepts, k)
+		}
+	}
+	for k := range s.inboundBytesSent {
+		if dropContainer(k.container.ContainerID) {
+			delete(s.inboundBytesSent, k)
+		}
+	}
+	for k := range s.inboundBytesReceived {
+		if dropContainer(k.container.ContainerID) {
+			delete(s.inboundBytesReceived, k)
+		}
+	}
 	for id := range s.destinationSeen {
 		if dropContainer(id) {
 			delete(s.destinationSeen, id)
@@ -436,10 +555,35 @@ func (s *Store) Prune(now time.Time, liveContainers LiveContainersFunc) {
 			delete(s.fqdnSeen, id)
 		}
 	}
+	for id := range s.urlSeen {
+		if dropContainer(id) {
+			delete(s.urlSeen, id)
+		}
+	}
+	for id := range s.sourceSeen {
+		if dropContainer(id) {
+			delete(s.sourceSeen, id)
+		}
+	}
 }
 
 func (s *Store) incEndpoint(values map[endpointKey]seriesValue, key endpointKey, delta float64) {
 	values[key] = seriesValue{value: values[key].value + delta, updatedAt: time.Now()}
+}
+
+func (s *Store) incSource(values map[sourceKey]seriesValue, key sourceKey, delta float64) {
+	values[key] = seriesValue{value: values[key].value + delta, updatedAt: time.Now()}
+}
+
+func (s *Store) sourceKey(container ContainerLabels, source string) sourceKey {
+	return sourceKey{
+		container: container,
+		source:    s.boundSource(container.ContainerID, source),
+	}
+}
+
+func (s *Store) boundSource(containerID, source string) string {
+	return s.boundValue(s.sourceSeen, containerID, source, s.cfg.DestinationLimit)
 }
 
 func (s *Store) endpointKey(container ContainerLabels, endpoint Endpoint) endpointKey {
@@ -460,6 +604,10 @@ func (s *Store) boundDestination(containerID, destination string) string {
 
 func (s *Store) boundFQDN(containerID, fqdn string) string {
 	return s.boundValue(s.fqdnSeen, containerID, fqdn, s.cfg.FQDNCeiling)
+}
+
+func (s *Store) boundURL(containerID, url string) string {
+	return s.boundValue(s.urlSeen, containerID, url, s.cfg.URLLimit)
 }
 
 func (s *Store) boundValue(seen map[string]map[string]struct{}, containerID, value string, limit int) string {
@@ -494,6 +642,11 @@ type histogramValue struct {
 type delayValue struct {
 	cpu       float64
 	io        float64
+	updatedAt time.Time
+}
+
+type resourceUsageValue struct {
+	sample    ResourceUsageSample
 	updatedAt time.Time
 }
 
@@ -552,11 +705,27 @@ func pruneDelays[K comparable](values map[K]delayValue, now time.Time, ttl time.
 	}
 }
 
+func pruneResourceUsage[K comparable](values map[K]resourceUsageValue, now time.Time, ttl time.Duration) {
+	for key, value := range values {
+		if now.Sub(value.updatedAt) > ttl {
+			delete(values, key)
+		}
+	}
+}
+
 func endpointSeries(key endpointKey, value seriesValue) EndpointSeries {
 	return EndpointSeries{
 		Container:         key.container,
 		Destination:       key.destination,
 		ActualDestination: key.actualDestination,
 		Value:             value.value,
+	}
+}
+
+func sourceSeries(key sourceKey, value seriesValue) SourceSeries {
+	return SourceSeries{
+		Container: key.container,
+		Source:    key.source,
+		Value:     value.value,
 	}
 }

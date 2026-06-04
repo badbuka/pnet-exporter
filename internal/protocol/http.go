@@ -9,10 +9,15 @@ import (
 type HTTPRequest struct {
 	Method string
 	Path   string
+	// URL is the full request URL used as a metric label: the Host header
+	// joined with the request path (e.g. "example.com/api"). When the
+	// request carries no Host header it falls back to the path alone.
+	// The query string is stripped to keep label cardinality bounded.
+	URL string
 }
 
 func ParseHTTPRequest(payload []byte) (HTTPRequest, bool) {
-	line, _, ok := bytes.Cut(payload, []byte("\r\n"))
+	line, rest, ok := bytes.Cut(payload, []byte("\r\n"))
 	if !ok {
 		return HTTPRequest{}, false
 	}
@@ -20,7 +25,41 @@ func ParseHTTPRequest(payload []byte) (HTTPRequest, bool) {
 	if len(parts) != 3 || !strings.HasPrefix(parts[2], "HTTP/") {
 		return HTTPRequest{}, false
 	}
-	return HTTPRequest{Method: parts[0], Path: parts[1]}, true
+
+	path := parts[1]
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+
+	url := path
+	if host := parseHostHeader(rest); host != "" {
+		url = host + path
+	}
+
+	return HTTPRequest{Method: parts[0], Path: parts[1], URL: url}, true
+}
+
+// parseHostHeader scans the header section of an HTTP/1.x request (the bytes
+// following the request line) for the first "Host" header and returns its
+// value. The match is case-insensitive per RFC 7230. It returns "" when no
+// Host header is present within the captured payload, which can happen if the
+// header was pushed beyond the fixed payload capture window.
+func parseHostHeader(headers []byte) string {
+	for len(headers) > 0 {
+		line, rest, _ := bytes.Cut(headers, []byte("\r\n"))
+		if len(line) == 0 {
+			break
+		}
+		headers = rest
+		name, value, ok := bytes.Cut(line, []byte(":"))
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(string(name)), "host") {
+			return strings.TrimSpace(string(value))
+		}
+	}
+	return ""
 }
 
 func ParseHTTPStatus(payload []byte) (string, bool) {

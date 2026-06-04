@@ -17,6 +17,7 @@ BPF_OBJECTS := \
     bpf/tcp_state.bpf.o \
     bpf/tcp_retransmit.bpf.o \
     bpf/tcp_bytes.bpf.o \
+    bpf/tcp_inbound.bpf.o \
     bpf/tcp_conntrack.bpf.o \
     bpf/l7.bpf.o \
     bpf/dns.bpf.o \

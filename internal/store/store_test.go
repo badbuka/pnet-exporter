@@ -159,6 +159,96 @@ func TestRecordResourceDelay(t *testing.T) {
 	}
 }
 
+func TestRecordResourceUsage(t *testing.T) {
+	st := New(config.Default().Store)
+	labels := ContainerLabels{ContainerID: "c1"}
+	st.RecordResourceUsage(ResourceUsageSample{
+		Container:        labels,
+		CPUUsageSeconds:  2.0,
+		MemoryUsageBytes: 1024,
+		HasMemoryLimit:   true,
+		MemoryLimitBytes: 4096,
+		IOReadBytes:      512,
+	})
+	snap := st.Snapshot()
+	if len(snap.ResourceUsage) != 1 {
+		t.Fatalf("expected 1 resource usage series, got %d", len(snap.ResourceUsage))
+	}
+	got := snap.ResourceUsage[0]
+	if got.CPUUsageSeconds != 2.0 || got.MemoryUsageBytes != 1024 || got.IOReadBytes != 512 {
+		t.Fatalf("unexpected resource usage values: %+v", got)
+	}
+	if !got.HasMemoryLimit || got.MemoryLimitBytes != 4096 {
+		t.Fatalf("expected memory limit to be carried, got %+v", got)
+	}
+
+	// Last write wins (kernel totals overwrite, not accumulate).
+	st.RecordResourceUsage(ResourceUsageSample{Container: labels, CPUUsageSeconds: 5.0})
+	snap = st.Snapshot()
+	if len(snap.ResourceUsage) != 1 || snap.ResourceUsage[0].CPUUsageSeconds != 5.0 {
+		t.Fatalf("expected overwrite to 5.0, got %#v", snap.ResourceUsage)
+	}
+}
+
+func TestInboundMetrics(t *testing.T) {
+	st := New(config.Default().Store)
+	labels := ContainerLabels{ContainerID: "c1"}
+
+	st.IncInboundAccept(InboundEvent{Container: labels, Source: "10.0.0.9:51000"})
+	st.IncInboundActive(InboundEvent{Container: labels, Source: "10.0.0.9:51000"})
+	st.IncInboundAccept(InboundEvent{Container: labels, Source: "10.0.0.9:51000"})
+	st.IncInboundActive(InboundEvent{Container: labels, Source: "10.0.0.9:51000"})
+	st.AddInboundBytesSent(InboundEvent{Container: labels, Source: "10.0.0.9:51000", Bytes: 100})
+	st.AddInboundBytesReceived(InboundEvent{Container: labels, Source: "10.0.0.9:51000", Bytes: 250})
+
+	snap := st.Snapshot()
+	if len(snap.InboundAccepts) != 1 || snap.InboundAccepts[0].Value != 2 {
+		t.Fatalf("expected accepts value 2, got %#v", snap.InboundAccepts)
+	}
+	if len(snap.InboundActive) != 1 || snap.InboundActive[0].Value != 2 {
+		t.Fatalf("expected active value 2, got %#v", snap.InboundActive)
+	}
+	if snap.InboundActive[0].Source != "10.0.0.9:51000" {
+		t.Fatalf("unexpected source label: %q", snap.InboundActive[0].Source)
+	}
+	if len(snap.InboundBytesSent) != 1 || snap.InboundBytesSent[0].Value != 100 {
+		t.Fatalf("expected bytes sent 100, got %#v", snap.InboundBytesSent)
+	}
+	if len(snap.InboundBytesReceived) != 1 || snap.InboundBytesReceived[0].Value != 250 {
+		t.Fatalf("expected bytes received 250, got %#v", snap.InboundBytesReceived)
+	}
+
+	// DecInboundActive clamps at zero.
+	st.DecInboundActive(InboundEvent{Container: labels, Source: "10.0.0.9:51000"})
+	st.DecInboundActive(InboundEvent{Container: labels, Source: "10.0.0.9:51000"})
+	st.DecInboundActive(InboundEvent{Container: labels, Source: "10.0.0.9:51000"})
+	snap = st.Snapshot()
+	if snap.InboundActive[0].Value != 0 {
+		t.Fatalf("expected active clamped to 0, got %f", snap.InboundActive[0].Value)
+	}
+}
+
+func TestInboundSourceCardinalityBounded(t *testing.T) {
+	cfg := config.Default().Store
+	cfg.DestinationLimit = 1
+	st := New(cfg)
+	labels := ContainerLabels{ContainerID: "c1"}
+
+	st.AddInboundBytesReceived(InboundEvent{Container: labels, Source: "10.0.0.1:1000", Bytes: 1})
+	st.AddInboundBytesReceived(InboundEvent{Container: labels, Source: "10.0.0.2:1000", Bytes: 1})
+
+	snap := st.Snapshot()
+	foundOverflow := false
+	for _, series := range snap.InboundBytesReceived {
+		if series.Source == overflowLabel {
+			foundOverflow = true
+		}
+	}
+	if !foundOverflow {
+		t.Fatal("expected overflow source series")
+	}
+}
+
 func TestSetLatencyLastWriteWins(t *testing.T) {
 	st := New(config.Default().Store)
 	labels := ContainerLabels{ContainerID: "c1"}

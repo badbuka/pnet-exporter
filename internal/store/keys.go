@@ -45,6 +45,7 @@ type protocolKey struct {
 	destination       string
 	actualDestination string
 	status            string
+	url               string
 }
 
 type protocolDurationKey struct {
@@ -52,6 +53,7 @@ type protocolDurationKey struct {
 	container         ContainerLabels
 	destination       string
 	actualDestination string
+	url               string
 }
 
 type oomKey struct {
@@ -60,4 +62,9 @@ type oomKey struct {
 
 type delayKey struct {
 	container ContainerLabels
+}
+
+type sourceKey struct {
+	container ContainerLabels
+	source    string
 }

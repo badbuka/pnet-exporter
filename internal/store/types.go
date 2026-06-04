@@ -27,6 +27,15 @@ type TCPEvent struct {
 	Value     float64
 }
 
+// InboundEvent carries a single inbound (server-side) TCP event from the
+// BPF layer to the store. Source is the remote client endpoint (IP:port).
+type InboundEvent struct {
+	Container ContainerLabels
+	Source    string
+	Bytes     uint64
+	Value     float64
+}
+
 // ListenEndpoint describes a TCP address that a container is actively listening on.
 type ListenEndpoint struct {
 	Container  ContainerLabels
@@ -67,7 +76,10 @@ type ProtocolEvent struct {
 	Container ContainerLabels
 	Endpoint  Endpoint
 	Status    string
-	Duration  time.Duration
+	// URL is the full request URL (host+path) for HTTP requests; empty for
+	// other protocols and for HTTP requests whose URL could not be parsed.
+	URL      string
+	Duration time.Duration
 }
 
 type LatencySample struct {
@@ -89,4 +101,46 @@ type ResourceDelaySample struct {
 	Container       ContainerLabels
 	CPUDelaySeconds float64
 	IODelaySeconds  float64
+}
+
+// ResourceUsageSample is a per-container resource-utilization reading
+// collected from the cgroup v2 control files (cpu.stat, memory.*,
+// io.stat, *.pressure). Counter fields hold cumulative kernel totals;
+// gauge fields (memory.*) hold the instantaneous value. The Has* flags
+// mark optional readings whose source file may be absent on a given host
+// so the collector can skip emitting an unset series.
+type ResourceUsageSample struct {
+	Container ContainerLabels
+
+	// cpu.stat (counters, seconds / counts)
+	CPUUsageSeconds     float64
+	CPUUserSeconds      float64
+	CPUSystemSeconds    float64
+	CPUPeriods          float64
+	CPUThrottledPeriods float64
+	CPUThrottledSeconds float64
+
+	// memory.* (gauges, bytes)
+	MemoryUsageBytes float64
+	MemoryPeakBytes  float64
+	MemoryLimitBytes float64
+	HasMemoryPeak    bool
+	HasMemoryLimit   bool
+
+	// io.stat (counters, summed across devices)
+	IOReadBytes    float64
+	IOWrittenBytes float64
+	IOReads        float64
+	IOWrites       float64
+
+	// PSI pressure totals (counters, seconds)
+	CPUPressureSomeSeconds    float64
+	CPUPressureFullSeconds    float64
+	MemoryPressureSomeSeconds float64
+	MemoryPressureFullSeconds float64
+	IOPressureSomeSeconds     float64
+	IOPressureFullSeconds     float64
+	HasCPUPressure            bool
+	HasMemoryPressure         bool
+	HasIOPressure             bool
 }
