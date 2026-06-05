@@ -39,6 +39,18 @@
       "id": "gauge",
       "name": "Gauge",
       "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "nodeGraph",
+      "name": "Node Graph",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "table",
+      "name": "Table",
+      "version": ""
     }
   ],
   "annotations": {
@@ -212,6 +224,136 @@
     {
       "collapsed": false,
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+      "id": 35,
+      "title": "Service topology",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Outbound TCP relationships between containers and their destinations (IP:port). The main stat / edge thickness is bytes sent per second. Raise \"Min edge rate\" to hide idle edges. External services appear as leaf nodes; high-cardinality destinations may be aggregated into ~other by the exporter.",
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 6},
+      "id": 36,
+      "options": {
+        "edges": {"mainStatUnit": "Bps"},
+        "nodes": {"mainStatUnit": "Bps"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "label_join(label_replace(label_replace(sum by (container_name, destination) (rate(container_net_tcp_bytes_sent_total{node_hostname=~\"$node\",container_name=~\"$container\",destination!=\"\"}[$__rate_interval])) > $min_edge_rate, \"source\", \"$1\", \"container_name\", \"(.*)\"), \"target\", \"$1\", \"destination\", \"(.*)\"), \"id\", \"->\", \"source\", \"target\")",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Service network map",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {"Time": true, "container_name": true, "destination": true},
+            "indexByName": {},
+            "renameByName": {"Value": "mainstat"}
+          }
+        }
+      ],
+      "type": "nodeGraph"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Number of outbound edges above the Min edge rate threshold for the current selection.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 3, "w": 6, "x": 0, "y": 16},
+      "id": 37,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "count(sum by (container_name, destination) (rate(container_net_tcp_bytes_sent_total{node_hostname=~\"$node\",container_name=~\"$container\",destination!=\"\"}[$__rate_interval])) > $min_edge_rate) or vector(0)",
+          "legendFormat": "edges",
+          "refId": "A"
+        }
+      ],
+      "title": "Active Edges",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Top outbound edges by bytes sent per second, with failed connects per second for context.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "bytes/s"}, "properties": [{"id": "unit", "value": "Bps"}]}
+        ]
+      },
+      "gridPos": {"h": 6, "w": 18, "x": 6, "y": 16},
+      "id": 38,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "showHeader": true,
+        "sortBy": [{"desc": true, "displayName": "bytes/s"}]
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (container_name, destination) (rate(container_net_tcp_bytes_sent_total{node_hostname=~\"$node\",container_name=~\"$container\",destination!=\"\"}[$__rate_interval])) > $min_edge_rate",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (container_name, destination) (rate(container_net_tcp_failed_connects_total{node_hostname=~\"$node\",container_name=~\"$container\",destination!=\"\"}[$__rate_interval]))",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Top Talkers",
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {"Time": true},
+            "indexByName": {},
+            "renameByName": {
+              "container_name": "source",
+              "destination": "target",
+              "Value #A": "bytes/s",
+              "Value #B": "failed/s"
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22},
       "id": 6,
       "title": "TCP Connections",
       "type": "row"
@@ -253,7 +395,7 @@
           }
         ]
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 23},
       "id": 7,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -306,7 +448,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 23},
       "id": 8,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -353,7 +495,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 31},
       "id": 9,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -406,7 +548,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 31},
       "id": 10,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -425,7 +567,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 39},
       "id": 11,
       "title": "HTTP",
       "type": "row"
@@ -460,7 +602,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 23},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
       "id": 12,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -507,7 +649,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 23},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
       "id": 13,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -538,7 +680,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 31},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 48},
       "id": 14,
       "title": "Databases & Messaging",
       "type": "row"
@@ -573,7 +715,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 32},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 49},
       "id": 15,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -620,7 +762,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 32},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 49},
       "id": 16,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -667,7 +809,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 32},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 49},
       "id": 17,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -714,7 +856,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 40},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 57},
       "id": 18,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -761,7 +903,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 40},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 57},
       "id": 19,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -808,7 +950,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 40},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 57},
       "id": 20,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -827,7 +969,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 48},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 65},
       "id": 21,
       "title": "DNS",
       "type": "row"
@@ -862,7 +1004,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 49},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 66},
       "id": 22,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -909,7 +1051,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 49},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 66},
       "id": 23,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -928,7 +1070,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 57},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 74},
       "id": 24,
       "title": "Container Resources",
       "type": "row"
@@ -966,7 +1108,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 58},
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 75},
       "id": 25,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -1013,7 +1155,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 58},
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 75},
       "id": 26,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -1060,7 +1202,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 58},
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 75},
       "id": 27,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -1107,7 +1249,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 58},
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 75},
       "id": 28,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -1126,7 +1268,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 66},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 83},
       "id": 29,
       "title": "Node",
       "type": "row"
@@ -1161,7 +1303,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 67},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 84},
       "id": 30,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -1198,7 +1340,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 67},
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 84},
       "id": 31,
       "options": {
         "orientation": "auto",
@@ -1228,7 +1370,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 67},
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 84},
       "id": 32,
       "options": {
         "colorMode": "value",
@@ -1297,7 +1439,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 75},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 92},
       "id": 33,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -1350,7 +1492,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 75},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 92},
       "id": 34,
       "options": {
         "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
@@ -1377,7 +1519,7 @@
   "refresh": "30s",
   "schemaVersion": 36,
   "style": "dark",
-  "tags": ["podman", "ebpf", "network"],
+  "tags": ["podman", "ebpf", "network", "topology"],
   "templating": {
     "list": [
       {
@@ -1432,6 +1574,23 @@
         "sort": 1,
         "type": "query",
         "label": "Container"
+      },
+      {
+        "current": {"selected": true, "text": "0.01", "value": "0.01"},
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "name": "min_edge_rate",
+        "label": "Min edge rate (B/s)",
+        "options": [
+          {"selected": false, "text": "0", "value": "0"},
+          {"selected": true, "text": "0.01", "value": "0.01"},
+          {"selected": false, "text": "100", "value": "100"},
+          {"selected": false, "text": "1000", "value": "1000"},
+          {"selected": false, "text": "10000", "value": "10000"}
+        ],
+        "query": "0,0.01,100,1000,10000",
+        "type": "custom"
       }
     ]
   },
