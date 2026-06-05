@@ -63,6 +63,11 @@ func (t SocketTuple) Source() string {
 	return endpoint(t.SourceAddress, t.SourcePort, t.Family)
 }
 
+// IsIPv6 reports whether the tuple's address family is IPv6.
+func (t SocketTuple) IsIPv6() bool {
+	return t.Family == familyIPv6
+}
+
 // DestinationIP returns just the address portion of the destination.
 func (t SocketTuple) DestinationIP() string {
 	addr, ok := address(t.DestinationAddress, t.Family)

@@ -53,6 +53,7 @@ type Features struct {
 	DelayAccounting    bool
 	OOM                bool
 	ContainerResources bool
+	IPv6               bool
 }
 
 type StoreConfig struct {
@@ -111,6 +112,7 @@ type envConfig struct {
 	FeatureDelayAccounting    bool          `envconfig:"FEATURE_DELAY_ACCOUNTING"       default:"true"`
 	FeatureOOM                bool          `envconfig:"FEATURE_OOM"                    default:"true"`
 	FeatureContainerResources bool          `envconfig:"FEATURE_CONTAINER_RESOURCES"    default:"true"`
+	FeatureIPv6               bool          `envconfig:"FEATURE_IPV6"                   default:"false"`
 	DestinationLimit          int           `envconfig:"MAX_DESTINATIONS_PER_CONTAINER" default:"512"`
 	FQDNCeiling               int           `envconfig:"MAX_FQDNS_PER_CONTAINER"        default:"100"`
 	URLLimit                  int           `envconfig:"MAX_URLS_PER_CONTAINER"         default:"200"`
@@ -256,6 +258,7 @@ func (e envConfig) toConfig() (Config, error) {
 			DelayAccounting:    e.FeatureDelayAccounting,
 			OOM:                e.FeatureOOM,
 			ContainerResources: e.FeatureContainerResources,
+			IPv6:               e.FeatureIPv6,
 		},
 		Store: StoreConfig{
 			DestinationLimit:     e.DestinationLimit,

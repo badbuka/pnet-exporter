@@ -95,6 +95,7 @@ See [Container discovery](#container-discovery) for details.
 | `PNET_FEATURE_DELAY_ACCOUNTING` | `true` | Per-container CPU and disk I/O wait counters from `/proc/<pid>/schedstat` |
 | `PNET_FEATURE_OOM` | `true` | Container OOM-kill counter |
 | `PNET_FEATURE_CONTAINER_RESOURCES` | `true` | Per-container CPU / memory / block-I/O / PSI pressure from cgroup v2 |
+| `PNET_FEATURE_IPV6` | `false` | Emit metrics for IPv6 connections, IPv6 DNS transport, and AAAA `ip_to_fqdn` mappings. Disabled by default; set to `true` to include all IPv6 series. |
 
 ### Metrics tuning
 

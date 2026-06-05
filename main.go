@@ -78,7 +78,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		return fmt.Errorf("build protocol classifier: %w", err)
 	}
 
-	loader := ebpf.NewLoader(cfg.EBPF, classifier, identityCache, metricStore, logger)
+	loader := ebpf.NewLoader(cfg.EBPF, classifier, identityCache, metricStore, logger, !cfg.Features.IPv6)
 	if cfg.Features.Network {
 		if err := loader.Start(ctx); err != nil {
 			return err

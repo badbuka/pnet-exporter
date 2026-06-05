@@ -3,6 +3,7 @@ package ebpf
 import (
 	"context"
 	"log/slog"
+	"net/netip"
 	"sync/atomic"
 	"time"
 
@@ -127,6 +128,11 @@ type Loader struct {
 	flows      *flowProtocols
 	urls       *requestURLs
 
+	// dropIPv6, when true, discards every IPv6-bearing metric before it
+	// reaches the store (IPv6 connection tuples, IPv6 DNS transport, and
+	// AAAA ip_to_fqdn mappings).
+	dropIPv6 bool
+
 	dnsStats dnsPipelineStats
 
 	state loaderState
@@ -145,7 +151,7 @@ type dnsPipelineStats struct {
 	mappingsObserved atomic.Uint64
 }
 
-func NewLoader(cfg config.EBPFConfig, classifier protocol.Classifier, identity *identity.Cache, metricStore *store.Store, logger *slog.Logger) *Loader {
+func NewLoader(cfg config.EBPFConfig, classifier protocol.Classifier, identity *identity.Cache, metricStore *store.Store, logger *slog.Logger, dropIPv6 bool) *Loader {
 	return &Loader{
 		cfg:        cfg,
 		identity:   identity,
@@ -156,6 +162,7 @@ func NewLoader(cfg config.EBPFConfig, classifier protocol.Classifier, identity *
 		tracker:    protocol.NewRequestTracker(30 * time.Second),
 		flows:      newFlowProtocols(5 * time.Minute),
 		urls:       newRequestURLs(30 * time.Second),
+		dropIPv6:   dropIPv6,
 	}
 }
 
@@ -164,6 +171,9 @@ func NewLoader(cfg config.EBPFConfig, classifier protocol.Classifier, identity *
 func (l *Loader) NATCache() *NATCache { return l.nat }
 
 func (l *Loader) dispatchTCP(event TCPEvent) {
+	if l.dropIPv6 && event.Tuple.IsIPv6() {
+		return
+	}
 	container := l.resolveContainer(event.CgroupID, event.PID)
 	dst := event.Tuple.Destination()
 	actual := l.nat.Lookup(dst)
@@ -206,6 +216,9 @@ func (l *Loader) dispatchTCP(event TCPEvent) {
 }
 
 func (l *Loader) dispatchNAT(event NATEvent) {
+	if l.dropIPv6 && (event.Orig.IsIPv6() || event.Reply.IsIPv6()) {
+		return
+	}
 	// The "reply" tuple's source is what packets actually come back from,
 	// which is the post-DNAT remote endpoint.
 	original := event.Orig.Destination()
@@ -217,6 +230,9 @@ func (l *Loader) dispatchNAT(event NATEvent) {
 }
 
 func (l *Loader) dispatchL7(event L7Event) {
+	if l.dropIPv6 && event.Tuple.IsIPv6() {
+		return
+	}
 	container := l.resolveContainer(event.CgroupID, event.PID)
 	if container.ContainerID == "" {
 		return
@@ -343,6 +359,10 @@ func (l *Loader) handleProtocolResponse(proto store.Protocol, event L7Event, con
 func (l *Loader) dispatchDNS(event DNSWireEvent) {
 	l.dnsStats.recordsReceived.Add(1)
 
+	if l.dropIPv6 && event.Tuple.IsIPv6() {
+		return
+	}
+
 	if event.Direction != DirResponse {
 		l.dnsStats.nonResponse.Add(1)
 		l.logger.Debug("dns: skipped non-response event",
@@ -398,6 +418,11 @@ func (l *Loader) dispatchDNS(event DNSWireEvent) {
 			"status", parsed.Status)
 	}
 	for _, ans := range parsed.Answers {
+		if l.dropIPv6 {
+			if addr, err := netip.ParseAddr(ans.IP); err == nil && !addr.Is4() {
+				continue
+			}
+		}
 		l.store.SetIPFQDN(store.IPFQDNMapping{
 			Container: container,
 			IP:        ans.IP,
