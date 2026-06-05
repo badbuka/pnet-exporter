@@ -44,13 +44,12 @@ jobs:
       - name: Snyk Open Source scan
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk test --severity-threshold=high
+        run: snyk test
       - name: Snyk Code scan (bpf)
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk code test bpf/ --severity-threshold=high
+        run: snyk code test bpf/ 
       - name: Snyk Code scan (go)
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk code test . --severity-threshold=high
-
+        run: snyk code test . 
