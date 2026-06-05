@@ -208,7 +208,8 @@ func TestInboundMetrics(t *testing.T) {
 	if len(snap.InboundActive) != 1 || snap.InboundActive[0].Value != 2 {
 		t.Fatalf("expected active value 2, got %#v", snap.InboundActive)
 	}
-	if snap.InboundActive[0].Source != "10.0.0.9:51000" {
+	// Port 51000 is in the default dynamic range, so it collapses to dyn_ports.
+	if snap.InboundActive[0].Source != "10.0.0.9:"+dynamicPortLabel {
 		t.Fatalf("unexpected source label: %q", snap.InboundActive[0].Source)
 	}
 	if len(snap.InboundBytesSent) != 1 || snap.InboundBytesSent[0].Value != 100 {
@@ -306,6 +307,89 @@ func TestPruneDropsLatencyByTTL(t *testing.T) {
 	snap := st.Snapshot()
 	if len(snap.Latency) != 0 {
 		t.Fatalf("expected latency to be pruned by TTL, got %d series", len(snap.Latency))
+	}
+}
+
+func TestCollapseDynamicPortsGroupsEphemeralDestinations(t *testing.T) {
+	cfg := config.Default().Store // CollapseDynamicPorts defaults to true.
+	st := New(cfg)
+	labels := ContainerLabels{ContainerID: "c1"}
+
+	for _, port := range []string{"56758", "56768", "56782"} {
+		st.ObserveProtocol(ProtocolEvent{
+			Protocol:  ProtocolPostgres,
+			Container: labels,
+			Endpoint:  Endpoint{Destination: "127.0.0.1:" + port},
+			Status:    "ok",
+		})
+	}
+
+	snap := st.Snapshot()
+	if len(snap.Protocol) != 1 {
+		t.Fatalf("expected ephemeral ports to collapse into 1 series, got %d", len(snap.Protocol))
+	}
+	got := snap.Protocol[0]
+	if got.Destination != "127.0.0.1:"+dynamicPortLabel {
+		t.Fatalf("expected destination %q, got %q", "127.0.0.1:"+dynamicPortLabel, got.Destination)
+	}
+	if got.Value != 3 {
+		t.Fatalf("expected the three queries to accumulate to value 3, got %f", got.Value)
+	}
+}
+
+func TestCollapseDynamicPortsPreservesServicePorts(t *testing.T) {
+	cfg := config.Default().Store
+	st := New(cfg)
+	labels := ContainerLabels{ContainerID: "c1"}
+
+	st.ObserveProtocol(ProtocolEvent{
+		Protocol:  ProtocolPostgres,
+		Container: labels,
+		Endpoint:  Endpoint{Destination: "10.0.0.5:5432"},
+		Status:    "ok",
+	})
+
+	snap := st.Snapshot()
+	if len(snap.Protocol) != 1 || snap.Protocol[0].Destination != "10.0.0.5:5432" {
+		t.Fatalf("expected service port to be preserved, got %#v", snap.Protocol)
+	}
+}
+
+func TestCollapseDynamicPortsDisabledKeepsEphemeralPorts(t *testing.T) {
+	cfg := config.Default().Store
+	cfg.CollapseDynamicPorts = false
+	st := New(cfg)
+	labels := ContainerLabels{ContainerID: "c1"}
+
+	for _, port := range []string{"56758", "56768"} {
+		st.ObserveProtocol(ProtocolEvent{
+			Protocol:  ProtocolPostgres,
+			Container: labels,
+			Endpoint:  Endpoint{Destination: "127.0.0.1:" + port},
+			Status:    "ok",
+		})
+	}
+
+	snap := st.Snapshot()
+	if len(snap.Protocol) != 2 {
+		t.Fatalf("expected ephemeral ports to remain distinct when disabled, got %d", len(snap.Protocol))
+	}
+}
+
+func TestCollapseDynamicPortsHandlesIPv6AndSource(t *testing.T) {
+	cfg := config.Default().Store
+	st := New(cfg)
+	labels := ContainerLabels{ContainerID: "c1"}
+
+	st.IncInboundAccept(InboundEvent{Container: labels, Source: "[::1]:56758"})
+	st.IncInboundAccept(InboundEvent{Container: labels, Source: "[::1]:56768"})
+
+	snap := st.Snapshot()
+	if len(snap.InboundAccepts) != 1 {
+		t.Fatalf("expected IPv6 ephemeral sources to collapse into 1 series, got %d", len(snap.InboundAccepts))
+	}
+	if got := snap.InboundAccepts[0].Source; got != "[::1]:"+dynamicPortLabel {
+		t.Fatalf("expected source %q, got %q", "[::1]:"+dynamicPortLabel, got)
 	}
 }
 

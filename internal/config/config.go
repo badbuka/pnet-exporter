@@ -56,13 +56,16 @@ type Features struct {
 }
 
 type StoreConfig struct {
-	DestinationLimit   int
-	FQDNCeiling        int
-	URLLimit           int
-	MetricTTL          time.Duration
-	CleanupInterval    time.Duration
-	DurationBuckets    []float64
-	DNSDurationBuckets []float64
+	DestinationLimit     int
+	FQDNCeiling          int
+	URLLimit             int
+	MetricTTL            time.Duration
+	CleanupInterval      time.Duration
+	DurationBuckets      []float64
+	DNSDurationBuckets   []float64
+	CollapseDynamicPorts bool
+	DynamicPortMin       uint16
+	DynamicPortMax       uint16
 }
 
 type LatencyConfig struct {
@@ -111,6 +114,9 @@ type envConfig struct {
 	DestinationLimit          int           `envconfig:"MAX_DESTINATIONS_PER_CONTAINER" default:"512"`
 	FQDNCeiling               int           `envconfig:"MAX_FQDNS_PER_CONTAINER"        default:"100"`
 	URLLimit                  int           `envconfig:"MAX_URLS_PER_CONTAINER"         default:"200"`
+	CollapseDynamicPorts      bool          `envconfig:"COLLAPSE_DYNAMIC_PORTS"         default:"true"`
+	DynamicPortMin            uint16        `envconfig:"DYNAMIC_PORT_MIN"               default:"32768"`
+	DynamicPortMax            uint16        `envconfig:"DYNAMIC_PORT_MAX"               default:"65535"`
 	MetricTTL                 time.Duration `envconfig:"METRIC_TTL"                     default:"10m"`
 	CleanupInterval           time.Duration `envconfig:"CLEANUP_INTERVAL"               default:"1m"`
 	DurationBuckets           string        `envconfig:"DURATION_BUCKETS"               default:"0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10"`
@@ -176,6 +182,11 @@ func (c Config) Validate() error {
 	}
 	if c.Store.MetricTTL <= 0 || c.Store.CleanupInterval <= 0 {
 		return errors.New("metric ttl and cleanup interval must be positive")
+	}
+	if c.Store.CollapseDynamicPorts {
+		if c.Store.DynamicPortMin == 0 || c.Store.DynamicPortMin > c.Store.DynamicPortMax {
+			return errors.New("PNET_DYNAMIC_PORT_MIN must be in 1..PNET_DYNAMIC_PORT_MAX")
+		}
 	}
 	if c.Latency.Interval <= 0 || c.Latency.Timeout <= 0 || c.Latency.MaxTargetsPerTick <= 0 {
 		return errors.New("latency settings must be positive")
@@ -247,13 +258,16 @@ func (e envConfig) toConfig() (Config, error) {
 			ContainerResources: e.FeatureContainerResources,
 		},
 		Store: StoreConfig{
-			DestinationLimit:   e.DestinationLimit,
-			FQDNCeiling:        e.FQDNCeiling,
-			URLLimit:           e.URLLimit,
-			MetricTTL:          e.MetricTTL,
-			CleanupInterval:    e.CleanupInterval,
-			DurationBuckets:    durationBuckets,
-			DNSDurationBuckets: dnsDurationBuckets,
+			DestinationLimit:     e.DestinationLimit,
+			FQDNCeiling:          e.FQDNCeiling,
+			URLLimit:             e.URLLimit,
+			MetricTTL:            e.MetricTTL,
+			CleanupInterval:      e.CleanupInterval,
+			DurationBuckets:      durationBuckets,
+			DNSDurationBuckets:   dnsDurationBuckets,
+			CollapseDynamicPorts: e.CollapseDynamicPorts,
+			DynamicPortMin:       e.DynamicPortMin,
+			DynamicPortMax:       e.DynamicPortMax,
 		},
 		Latency: LatencyConfig{
 			Interval:          e.LatencyInterval,

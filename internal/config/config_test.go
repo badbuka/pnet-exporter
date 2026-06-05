@@ -94,3 +94,37 @@ func TestLoadRejectsDuplicatePort(t *testing.T) {
 		t.Fatal("expected duplicate port error")
 	}
 }
+
+func TestDefaultDynamicPortCollapse(t *testing.T) {
+	store := Default().Store
+	if !store.CollapseDynamicPorts {
+		t.Fatal("expected dynamic-port collapse to default on")
+	}
+	if store.DynamicPortMin != 32768 || store.DynamicPortMax != 65535 {
+		t.Fatalf("unexpected default dynamic port range: %d..%d", store.DynamicPortMin, store.DynamicPortMax)
+	}
+}
+
+func TestLoadRejectsInvalidDynamicPortRange(t *testing.T) {
+	t.Setenv("PNET_DYNAMIC_PORT_MIN", "60000")
+	t.Setenv("PNET_DYNAMIC_PORT_MAX", "30000")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid dynamic port range error (min > max)")
+	}
+}
+
+func TestLoadAllowsDisablingDynamicPortCollapse(t *testing.T) {
+	t.Setenv("PNET_COLLAPSE_DYNAMIC_PORTS", "false")
+	// An otherwise-invalid range must not fail validation when disabled.
+	t.Setenv("PNET_DYNAMIC_PORT_MIN", "60000")
+	t.Setenv("PNET_DYNAMIC_PORT_MAX", "30000")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Store.CollapseDynamicPorts {
+		t.Fatal("expected dynamic-port collapse to be disabled")
+	}
+}

@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"net"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -10,6 +12,12 @@ import (
 )
 
 const overflowLabel = "~other"
+
+// dynamicPortLabel replaces the port of an address whose port falls in the
+// configured dynamic/ephemeral range. Collapsing these ports keeps all
+// short-lived connections to a host in a single time series instead of one
+// per connection.
+const dynamicPortLabel = "dyn_ports"
 
 // Store holds all metric series in memory between Prometheus scrapes.
 //
@@ -583,7 +591,7 @@ func (s *Store) sourceKey(container ContainerLabels, source string) sourceKey {
 }
 
 func (s *Store) boundSource(containerID, source string) string {
-	return s.boundValue(s.sourceSeen, containerID, source, s.cfg.DestinationLimit)
+	return s.boundValue(s.sourceSeen, containerID, s.normalizeAddr(source), s.cfg.DestinationLimit)
 }
 
 func (s *Store) endpointKey(container ContainerLabels, endpoint Endpoint) endpointKey {
@@ -599,7 +607,30 @@ func (s *Store) endpointKey(container ContainerLabels, endpoint Endpoint) endpoi
 }
 
 func (s *Store) boundDestination(containerID, destination string) string {
-	return s.boundValue(s.destinationSeen, containerID, destination, s.cfg.DestinationLimit)
+	return s.boundValue(s.destinationSeen, containerID, s.normalizeAddr(destination), s.cfg.DestinationLimit)
+}
+
+// normalizeAddr collapses the port of an "IP:port" address into the
+// dynamicPortLabel token when the port falls inside the configured
+// dynamic/ephemeral range. The host is preserved so distinct hosts stay
+// separate. Addresses without a parseable port (plain IPs, FQDNs) are
+// returned unchanged, as is everything when the feature is disabled.
+func (s *Store) normalizeAddr(addr string) string {
+	if !s.cfg.CollapseDynamicPorts || addr == "" {
+		return addr
+	}
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	port, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
+		return addr
+	}
+	if uint16(port) < s.cfg.DynamicPortMin || uint16(port) > s.cfg.DynamicPortMax {
+		return addr
+	}
+	return net.JoinHostPort(host, dynamicPortLabel)
 }
 
 func (s *Store) boundFQDN(containerID, fqdn string) string {
