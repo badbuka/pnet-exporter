@@ -6,7 +6,7 @@ require (
 	github.com/cilium/ebpf v0.21.0
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/prometheus/client_golang v1.23.2
-	golang.org/x/sys v0.37.0
+	golang.org/x/sys v0.45.0
 )
 
 require (
