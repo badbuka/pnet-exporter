@@ -105,6 +105,9 @@ See [Container discovery](#container-discovery) for details.
 | `PNET_MAX_DESTINATIONS_PER_CONTAINER` | `512` | Max distinct destination labels per container; excess values become `~other` |
 | `PNET_MAX_FQDNS_PER_CONTAINER` | `100` | Max distinct FQDN labels per container; excess values become `~other` |
 | `PNET_MAX_URLS_PER_CONTAINER` | `200` | Max distinct HTTP `url` labels per container; excess values become `~other` |
+| `PNET_COLLAPSE_DYNAMIC_PORTS` | `true` | Collapse ephemeral-port `destination`/`actual_destination`/`source` labels: a port in the dynamic range is replaced with `dyn_ports` (e.g. `127.0.0.1:dyn_ports`), keeping all short-lived connections to a host in one series |
+| `PNET_DYNAMIC_PORT_MIN` | `32768` | Lower bound (inclusive) of the dynamic port range collapsed into `dyn_ports` |
+| `PNET_DYNAMIC_PORT_MAX` | `65535` | Upper bound (inclusive) of the dynamic port range collapsed into `dyn_ports` |
 | `PNET_DURATION_BUCKETS` | `0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10` | Histogram bucket boundaries for L7 request durations (seconds, comma-separated) |
 | `PNET_DNS_DURATION_BUCKETS` | `0.001,0.0025,0.005,0.01,0.025,0.05,0.1,0.25,0.5` | Histogram bucket boundaries for DNS request durations (seconds, comma-separated) |
 
@@ -210,6 +213,10 @@ All metrics include the `node_hostname` label. Container-scoped metrics
 additionally include `container_id`, `container_name`, and `pod_id`.
 Destination label values are bounded per container by
 `PNET_MAX_DESTINATIONS_PER_CONTAINER`; overflow values become `~other`.
+With `PNET_COLLAPSE_DYNAMIC_PORTS` enabled (the default), `destination`,
+`actual_destination`, and `source` values whose port is in the dynamic
+range collapse to `IP:dyn_ports` to keep ephemeral-port churn from
+inflating cardinality.
 
 ### TCP
 
@@ -233,7 +240,11 @@ Driven by `tcp_inbound.bpf.o`, which tracks sockets returned by
 `inet_csk_accept` (connections a server inside the container accepted).
 These metrics carry a `source` label holding the remote client endpoint
 (`IP:port`), bounded per container by `PNET_MAX_DESTINATIONS_PER_CONTAINER`
-(overflow becomes `~other`). They are additive: server-side bytes also
+(overflow becomes `~other`). When `PNET_COLLAPSE_DYNAMIC_PORTS` is enabled
+(the default), client endpoints whose port falls in the dynamic range
+(`PNET_DYNAMIC_PORT_MIN`..`PNET_DYNAMIC_PORT_MAX`) are collapsed to
+`IP:dyn_ports`, so per-connection ephemeral ports do not explode
+cardinality. They are additive: server-side bytes also
 still appear in the peer-labeled `container_net_tcp_bytes_*_total` totals
 above; the inbound series provide the disambiguated server view by client.
 
