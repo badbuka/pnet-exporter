@@ -3,7 +3,6 @@ package ebpf
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"net/netip"
 	"time"
 
@@ -78,7 +77,12 @@ func endpoint(raw [16]byte, port uint16, family uint16) string {
 	if !ok {
 		return ""
 	}
-	return fmt.Sprintf("%s:%d", addr.String(), port)
+	// netip.AddrPort renders IPv6 with brackets ("[::1]:443") so the
+	// result is a canonical, parseable host:port. A bare Sprintf would
+	// emit ambiguous strings like ":::34278" that net.SplitHostPort
+	// rejects, which silently breaks dynamic-port collapse and latency
+	// probing for every IPv6 endpoint.
+	return netip.AddrPortFrom(addr, port).String()
 }
 
 func address(raw [16]byte, family uint16) (netip.Addr, bool) {

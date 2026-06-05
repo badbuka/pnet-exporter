@@ -128,8 +128,8 @@ func TestDecodeTCPEventIPv6(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got := event.Tuple.Destination(); got != "::1:443" {
-		t.Fatalf("IPv6 destination: got %q, want ::1:443", got)
+	if got := event.Tuple.Destination(); got != "[::1]:443" {
+		t.Fatalf("IPv6 destination: got %q, want [::1]:443", got)
 	}
 }
 

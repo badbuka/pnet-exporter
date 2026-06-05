@@ -341,6 +341,35 @@ host-level metrics scraped from `/proc`:
 
 - `pnet_exporter_build_info` gauge: labels `version`, `commit`, `go_version`.
 
+## Grafana dashboard
+
+A ready-to-import dashboard lives at
+[`grafana/pnet-exporter.json`](grafana/pnet-exporter.json). It is grouped into
+rows (Overview, Service topology, TCP, HTTP, databases, DNS, container
+resources, and node metrics) and uses the `node`, `container`, and
+`min_edge_rate` template variables to scope what is shown.
+
+### Service topology
+
+The **Service topology** row renders a Node graph of who talks to whom. Each
+node is a container (by `container_name`) or an outbound endpoint, and each edge
+is an outbound TCP relationship taken straight from the exporter's metrics:
+
+- Edges come from `container_net_tcp_successful_connects_total` /
+  `container_net_tcp_bytes_sent_total`, grouped by `container_name` (source) and
+  `destination` (target). The edge main stat is bytes sent per second.
+- Targets are shown as raw `IP:port` exactly as exported, so external services
+  appear as leaf nodes. There is no FQDN or peer-container resolution in the
+  graph; use the DNS panels and `ip_to_fqdn` if you need name lookups.
+- The **Min edge rate (B/s)** variable (`min_edge_rate`, default `0.01`) hides
+  idle edges so the graph stays readable on busy hosts.
+- A **Top Talkers** table and an **Active Edges** stat accompany the graph for a
+  sortable, numeric view of the same data.
+
+Because destination label values are bounded per container by
+`PNET_MAX_DESTINATIONS_PER_CONTAINER`, hosts with very high destination
+cardinality will show an aggregated `~other` node rather than every endpoint.
+
 ## Design choices
 
 - Discovery is Podman-only (no docker/containerd/CRI-O integrations), but it
