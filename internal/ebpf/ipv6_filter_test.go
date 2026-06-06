@@ -105,6 +105,18 @@ func TestDispatchDNSDropsAAAAMappingWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestDispatchDNSDropsAAAARequestWhenDisabled(t *testing.T) {
+	loader, metricStore, cache := newTestLoader(t, true)
+	cache.Upsert(identity.Container{ID: "abc", Name: "web", CgroupID: 200})
+
+	// AAAA question over IPv4 transport: the request itself is for an IPv6
+	// address and must not produce a container_dns_requests_total series.
+	loader.dispatchDNS(dnsAAAAEvent(familyIPv4))
+	if got := len(metricStore.Snapshot().DNSRequests); got != 0 {
+		t.Fatalf("expected AAAA dns request to be dropped, got %d series", got)
+	}
+}
+
 func TestDispatchDNSKeepsAAAAMappingWhenEnabled(t *testing.T) {
 	loader, metricStore, cache := newTestLoader(t, false)
 	cache.Upsert(identity.Container{ID: "abc", Name: "web", CgroupID: 200})

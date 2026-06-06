@@ -403,6 +403,9 @@ func (l *Loader) dispatchDNS(event DNSWireEvent) {
 	}
 
 	for _, q := range parsed.Questions {
+		if l.dropIPv6 && q.Type == "AAAA" {
+			continue
+		}
 		l.store.ObserveDNS(store.DNSEvent{
 			Container:   container,
 			Domain:      q.Name,
