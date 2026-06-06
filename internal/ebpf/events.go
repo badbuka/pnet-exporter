@@ -63,9 +63,18 @@ func (t SocketTuple) Source() string {
 	return endpoint(t.SourceAddress, t.SourcePort, t.Family)
 }
 
-// IsIPv6 reports whether the tuple's address family is IPv6.
+// IsIPv6 reports whether the tuple carries a genuine IPv6 endpoint.
+//
+// It is not enough to check the address family: dual-stack AF_INET6
+// sockets carry IPv4 traffic as v4-mapped IPv6 addresses
+// (::ffff:a.b.c.d) while still reporting skc_family == AF_INET6. Those
+// flows are effectively IPv4, so they are reported as not-IPv6 to avoid
+// filtering legitimate IPv4 traffic when IPv6 metrics are disabled.
 func (t SocketTuple) IsIPv6() bool {
-	return t.Family == familyIPv6
+	if t.Family != familyIPv6 {
+		return false
+	}
+	return !netip.AddrFrom16(t.DestinationAddress).Is4In6()
 }
 
 // DestinationIP returns just the address portion of the destination.

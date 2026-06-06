@@ -359,10 +359,12 @@ func (l *Loader) handleProtocolResponse(proto store.Protocol, event L7Event, con
 func (l *Loader) dispatchDNS(event DNSWireEvent) {
 	l.dnsStats.recordsReceived.Add(1)
 
-	if l.dropIPv6 && event.Tuple.IsIPv6() {
-		return
-	}
-
+	// NOTE: we deliberately do NOT drop on event.Tuple.IsIPv6() here. The
+	// DNS tuple family reflects the resolver *socket* family (skc_family),
+	// which is commonly AF_INET6 even for A-record lookups on dual-stack
+	// hosts. Filtering on it would discard all IPv4 DNS data. IPv6 DNS
+	// metrics are instead filtered per-question (AAAA) and per-answer
+	// (IPv6 address) below.
 	if event.Direction != DirResponse {
 		l.dnsStats.nonResponse.Add(1)
 		l.logger.Debug("dns: skipped non-response event",

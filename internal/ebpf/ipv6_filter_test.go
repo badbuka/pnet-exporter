@@ -94,6 +94,41 @@ func dnsAAAAEvent(family uint16) DNSWireEvent {
 	}
 }
 
+// dnsAResponse is a hand-crafted DNS response for example.com -> 93.184.216.34 (A).
+func dnsAResponse() []byte {
+	return []byte{
+		0x12, 0x34, // id
+		0x81, 0x80, // flags: response, recursion available
+		0x00, 0x01, // qdcount
+		0x00, 0x01, // ancount
+		0x00, 0x00, // nscount
+		0x00, 0x00, // arcount
+		7, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+		3, 'c', 'o', 'm',
+		0,
+		0x00, 0x01, // QTYPE A
+		0x00, 0x01, // QCLASS IN
+		0xc0, 0x0c, // pointer to QNAME
+		0x00, 0x01, // TYPE A
+		0x00, 0x01, // CLASS IN
+		0x00, 0x00, 0x00, 0x3c, // TTL 60
+		0x00, 0x04, // RDLENGTH 4
+		93, 184, 216, 34,
+	}
+}
+
+func dnsAEvent(family uint16) DNSWireEvent {
+	payload := dnsAResponse()
+	return DNSWireEvent{
+		Kind:       EventDNS,
+		Direction:  DirResponse,
+		CgroupID:   200,
+		Tuple:      SocketTuple{Family: family},
+		PayloadLen: uint16(len(payload)),
+		Payload:    payload,
+	}
+}
+
 func TestDispatchDNSDropsAAAAMappingWhenDisabled(t *testing.T) {
 	loader, metricStore, cache := newTestLoader(t, true)
 	cache.Upsert(identity.Container{ID: "abc", Name: "web", CgroupID: 200})
@@ -131,15 +166,18 @@ func TestDispatchDNSKeepsAAAAMappingWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestDispatchDNSDropsIPv6TransportWhenDisabled(t *testing.T) {
+func TestDispatchDNSKeepsIPv4DataOverIPv6Transport(t *testing.T) {
 	loader, metricStore, cache := newTestLoader(t, true)
 	cache.Upsert(identity.Container{ID: "abc", Name: "web", CgroupID: 200})
 
-	// DNS response delivered over IPv6 transport: the whole event drops.
-	loader.dispatchDNS(dnsAAAAEvent(familyIPv6))
+	// Resolvers commonly use an AF_INET6 socket even for A-record lookups,
+	// so a DNS event over IPv6 transport must NOT discard its IPv4 data.
+	loader.dispatchDNS(dnsAEvent(familyIPv6))
 	snap := metricStore.Snapshot()
-	if len(snap.DNSRequests) != 0 || len(snap.IPToFQDN) != 0 {
-		t.Fatalf("expected IPv6-transport DNS event to be dropped, got %d requests / %d mappings",
-			len(snap.DNSRequests), len(snap.IPToFQDN))
+	if len(snap.DNSRequests) != 1 || snap.DNSRequests[0].RequestType != "A" {
+		t.Fatalf("expected A dns request to survive IPv6 transport, got %#v", snap.DNSRequests)
+	}
+	if len(snap.IPToFQDN) != 1 || snap.IPToFQDN[0].IP != "93.184.216.34" {
+		t.Fatalf("expected IPv4 ip_to_fqdn to survive IPv6 transport, got %#v", snap.IPToFQDN)
 	}
 }
