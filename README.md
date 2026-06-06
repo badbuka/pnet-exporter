@@ -135,7 +135,7 @@ used only to enrich names and pod IDs. See
 | `PNET_MAX_FQDNS_PER_CONTAINER` | `100` | Max distinct FQDN labels per container; excess values become `~other` |
 | `PNET_MAX_URLS_PER_CONTAINER` | `200` | Max distinct HTTP `url` labels per container; excess values become `~other` |
 | `PNET_COLLAPSE_DYNAMIC_PORTS` | `true` | Collapse ephemeral-port `destination`/`actual_destination`/`source` labels: a port in the dynamic range is replaced with `dyn_ports` (e.g. `127.0.0.1:dyn_ports`), keeping all short-lived connections to a host in one series |
-| `PNET_DYNAMIC_PORT_MIN` | `32768` | Lower bound (inclusive) of the dynamic port range collapsed into `dyn_ports` |
+| `PNET_DYNAMIC_PORT_MIN` | `10248` | Lower bound (inclusive) of the dynamic port range collapsed into `dyn_ports` |
 | `PNET_DYNAMIC_PORT_MAX` | `65535` | Upper bound (inclusive) of the dynamic port range collapsed into `dyn_ports` |
 | `PNET_DURATION_BUCKETS` | `0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10` | Histogram bucket boundaries for L7 request durations (seconds, comma-separated) |
 | `PNET_DNS_DURATION_BUCKETS` | `0.001,0.0025,0.005,0.01,0.025,0.05,0.1,0.25,0.5` | Histogram bucket boundaries for DNS request durations (seconds, comma-separated) |

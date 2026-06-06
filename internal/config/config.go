@@ -119,7 +119,7 @@ type envConfig struct {
 	FQDNCeiling               int           `envconfig:"MAX_FQDNS_PER_CONTAINER"        default:"100"`
 	URLLimit                  int           `envconfig:"MAX_URLS_PER_CONTAINER"         default:"200"`
 	CollapseDynamicPorts      bool          `envconfig:"COLLAPSE_DYNAMIC_PORTS"         default:"true"`
-	DynamicPortMin            uint16        `envconfig:"DYNAMIC_PORT_MIN"               default:"32768"`
+	DynamicPortMin            uint16        `envconfig:"DYNAMIC_PORT_MIN"               default:"10248"`
 	DynamicPortMax            uint16        `envconfig:"DYNAMIC_PORT_MAX"               default:"65535"`
 	MetricTTL                 time.Duration `envconfig:"METRIC_TTL"                     default:"10m"`
 	CleanupInterval           time.Duration `envconfig:"CLEANUP_INTERVAL"               default:"1m"`
