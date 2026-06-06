@@ -106,7 +106,7 @@ func TestDefaultDynamicPortCollapse(t *testing.T) {
 	if !store.CollapseDynamicPorts {
 		t.Fatal("expected dynamic-port collapse to default on")
 	}
-	if store.DynamicPortMin != 32768 || store.DynamicPortMax != 65535 {
+	if store.DynamicPortMin != 10248 || store.DynamicPortMax != 65535 {
 		t.Fatalf("unexpected default dynamic port range: %d..%d", store.DynamicPortMin, store.DynamicPortMax)
 	}
 }
