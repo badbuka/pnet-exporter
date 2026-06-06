@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"pnet-exporter/internal/podman"
+	"pnet-exporter/internal/discovery"
 )
 
 // TestDiscovererListAgainstProcFixture exercises the /proc-scanning discovery
-// path against a synthetic procfs tree, with no Podman socket reachable. It
+// path against a synthetic procfs tree, with no runtime socket reachable. It
 // asserts that containers are surfaced purely from cgroup data, which is the
 // behaviour the exporter relies on for rootless users whose socket may be
 // absent.
@@ -31,8 +31,8 @@ func TestDiscovererListAgainstProcFixture(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	// Unreachable socket + empty glob: enrichment is a no-op, /proc is truth.
-	d := podman.NewDiscoverer(filepath.Join(t.TempDir(), "missing.sock"), "", procFS, t.TempDir(), logger)
+	// Unreachable sockets + empty glob: enrichment is a no-op, /proc is truth.
+	d := discovery.NewDiscoverer(filepath.Join(t.TempDir(), "missing.sock"), "", filepath.Join(t.TempDir(), "no-docker.sock"), procFS, t.TempDir(), logger)
 
 	containers, err := d.List(t.Context())
 	if err != nil {

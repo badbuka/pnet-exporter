@@ -16,6 +16,7 @@ type Config struct {
 	ListenAddress         string
 	PodmanSocket          string
 	PodmanUserSocketsGlob string
+	DockerSocket          string
 	SysFS                 string
 	ProcFS                string
 	LogLevel              slog.Level
@@ -95,6 +96,7 @@ type envConfig struct {
 	ListenAddress             string        `envconfig:"LISTEN_ADDRESS"                 default:":9108"`
 	PodmanSocket              string        `envconfig:"PODMAN_SOCKET"                  default:"/run/podman/podman.sock"`
 	PodmanUserSocketsGlob     string        `envconfig:"PODMAN_USER_SOCKETS_GLOB"       default:"/run/user/*/podman/podman.sock"`
+	DockerSocket              string        `envconfig:"DOCKER_SOCKET"                  default:"/var/run/docker.sock"`
 	SysFS                     string        `envconfig:"SYSFS"                          default:"/sys"`
 	ProcFS                    string        `envconfig:"PROCFS"                         default:"/proc"`
 	LogLevel                  string        `envconfig:"LOG_LEVEL"                      default:"info"`
@@ -240,6 +242,7 @@ func (e envConfig) toConfig() (Config, error) {
 		ListenAddress:         e.ListenAddress,
 		PodmanSocket:          e.PodmanSocket,
 		PodmanUserSocketsGlob: e.PodmanUserSocketsGlob,
+		DockerSocket:          e.DockerSocket,
 		SysFS:                 e.SysFS,
 		ProcFS:                e.ProcFS,
 		LogLevel:              logLevel,

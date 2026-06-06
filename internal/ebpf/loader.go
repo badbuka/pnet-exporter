@@ -295,7 +295,7 @@ func sniffProtocol(dir Direction, payload []byte) (store.Protocol, bool) {
 }
 
 func (l *Loader) handleProtocolRequest(proto store.Protocol, event L7Event, container store.ContainerLabels, dst, actual string) {
-	correlation := protocolCorrelation(proto, event.Payload)
+	correlation := protocolCorrelation(proto, DirRequest, event.Payload)
 	if correlation == "" {
 		correlation = dst
 	}
@@ -320,7 +320,7 @@ func (l *Loader) handleProtocolRequest(proto store.Protocol, event L7Event, cont
 }
 
 func (l *Loader) handleProtocolResponse(proto store.Protocol, event L7Event, container store.ContainerLabels, dst, actual string) {
-	correlation := protocolCorrelation(proto, event.Payload)
+	correlation := protocolCorrelation(proto, DirResponse, event.Payload)
 	if correlation == "" {
 		correlation = dst
 	}

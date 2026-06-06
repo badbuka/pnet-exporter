@@ -14,10 +14,10 @@ import (
 	"pnet-exporter/internal/collector"
 	"pnet-exporter/internal/config"
 	"pnet-exporter/internal/delays"
+	"pnet-exporter/internal/discovery"
 	"pnet-exporter/internal/ebpf"
 	"pnet-exporter/internal/identity"
 	"pnet-exporter/internal/node"
-	"pnet-exporter/internal/podman"
 	"pnet-exporter/internal/prober"
 	"pnet-exporter/internal/protocol"
 	"pnet-exporter/internal/resources"
@@ -61,11 +61,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 
 	identityCache := identity.NewCache(cfg.ContainerTTL)
-	discoverer := podman.NewDiscoverer(cfg.PodmanSocket, cfg.PodmanUserSocketsGlob, cfg.ProcFS, cfg.SysFS, logger)
+	discoverer := discovery.NewDiscoverer(cfg.PodmanSocket, cfg.PodmanUserSocketsGlob, cfg.DockerSocket, cfg.ProcFS, cfg.SysFS, logger)
 	metricStore := store.New(cfg.Store)
 
 	if err := refreshContainers(ctx, discoverer, identityCache, logger); err != nil {
-		logger.Warn("initial podman discovery failed", "error", err)
+		logger.Warn("initial container discovery failed", "error", err)
 	}
 
 	classifier, err := protocol.NewClassifier(map[store.Protocol][]uint16{
@@ -156,7 +156,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 }
 
-func runDiscoveryLoop(ctx context.Context, cfg config.Config, discoverer *podman.Discoverer, cache *identity.Cache, logger *slog.Logger) {
+func runDiscoveryLoop(ctx context.Context, cfg config.Config, discoverer *discovery.Discoverer, cache *identity.Cache, logger *slog.Logger) {
 	ticker := time.NewTicker(cfg.DiscoveryInterval)
 	defer ticker.Stop()
 
@@ -166,13 +166,13 @@ func runDiscoveryLoop(ctx context.Context, cfg config.Config, discoverer *podman
 			return
 		case <-ticker.C:
 			if err := refreshContainers(ctx, discoverer, cache, logger); err != nil {
-				logger.Warn("podman discovery failed", "error", err)
+				logger.Warn("container discovery failed", "error", err)
 			}
 		}
 	}
 }
 
-func refreshContainers(ctx context.Context, discoverer *podman.Discoverer, cache *identity.Cache, logger *slog.Logger) error {
+func refreshContainers(ctx context.Context, discoverer *discovery.Discoverer, cache *identity.Cache, logger *slog.Logger) error {
 	containers, err := discoverer.List(ctx)
 	if err != nil {
 		return err

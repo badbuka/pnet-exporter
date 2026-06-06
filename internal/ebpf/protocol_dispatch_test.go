@@ -7,16 +7,38 @@ import (
 )
 
 func TestProtocolCorrelationKafka(t *testing.T) {
-	payload := []byte{0, 0, 0, 8, 0, 0, 0, 1, 0, 0, 0, 42}
-	got := protocolCorrelation(store.ProtocolKafka, payload)
+	// size=8, api_key=0, api_version=0, correlation_id=42
+	payload := []byte{0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 42}
+	got := protocolCorrelation(store.ProtocolKafka, DirRequest, payload)
 	if got != "kafka:42" {
 		t.Fatalf("unexpected correlation: %q", got)
 	}
 }
 
+// TestProtocolCorrelationKafkaRequestResponseMatch guards the core Kafka
+// correlation contract: a request and its echoed response must yield the same
+// token despite their different header layouts (request carries
+// api_key/api_version before correlation_id; response carries it right after
+// the size prefix).
+func TestProtocolCorrelationKafkaRequestResponseMatch(t *testing.T) {
+	// Request: size, api_key=1 (fetch), api_version=11, correlation_id=42
+	request := []byte{0, 0, 0, 16, 0, 1, 0, 11, 0, 0, 0, 42}
+	// Response: size, correlation_id=42, then body bytes.
+	response := []byte{0, 0, 0, 16, 0, 0, 0, 42, 0, 0, 0, 0}
+
+	reqToken := protocolCorrelation(store.ProtocolKafka, DirRequest, request)
+	respToken := protocolCorrelation(store.ProtocolKafka, DirResponse, response)
+	if reqToken != "kafka:42" {
+		t.Fatalf("request token: got %q, want kafka:42", reqToken)
+	}
+	if respToken != reqToken {
+		t.Fatalf("response token %q does not match request token %q", respToken, reqToken)
+	}
+}
+
 func TestProtocolCorrelationHTTP(t *testing.T) {
 	payload := []byte("GET /api HTTP/1.1\r\nHost: example\r\n\r\n")
-	got := protocolCorrelation(store.ProtocolHTTP, payload)
+	got := protocolCorrelation(store.ProtocolHTTP, DirRequest, payload)
 	if got != "http:GET /api" {
 		t.Fatalf("unexpected correlation: %q", got)
 	}
@@ -40,14 +62,14 @@ func TestProtocolStatusRedis(t *testing.T) {
 
 func TestProtocolCorrelationPostgres(t *testing.T) {
 	payload := []byte{'Q', 0, 0, 0, 0}
-	if got := protocolCorrelation(store.ProtocolPostgres, payload); got != "pg:query" {
+	if got := protocolCorrelation(store.ProtocolPostgres, DirRequest, payload); got != "pg:query" {
 		t.Fatalf("postgres correlation: %q", got)
 	}
 }
 
 func TestProtocolCorrelationRedis(t *testing.T) {
 	payload := []byte("GET key\r\n")
-	if got := protocolCorrelation(store.ProtocolRedis, payload); got != "redis:GET" {
+	if got := protocolCorrelation(store.ProtocolRedis, DirRequest, payload); got != "redis:GET" {
 		t.Fatalf("redis correlation: %q", got)
 	}
 }
@@ -63,7 +85,7 @@ func TestProtocolCorrelationShortPayloads(t *testing.T) {
 		{store.ProtocolRedis, nil},
 	}
 	for _, tc := range tests {
-		if got := protocolCorrelation(tc.proto, tc.payload); got != "" {
+		if got := protocolCorrelation(tc.proto, DirRequest, tc.payload); got != "" {
 			t.Errorf("protocolCorrelation(%s, short): got %q, want empty", tc.proto, got)
 		}
 	}

@@ -1,4 +1,4 @@
-package podman
+package discovery
 
 import (
 	"io"
@@ -12,6 +12,8 @@ import (
 const (
 	idA = "1111111111111111111111111111111111111111111111111111111111111111"
 	idB = "2222222222222222222222222222222222222222222222222222222222222222"
+	idC = "3333333333333333333333333333333333333333333333333333333333333333"
+	idD = "4444444444444444444444444444444444444444444444444444444444444444"
 )
 
 func TestParseCgroup(t *testing.T) {
@@ -39,6 +41,18 @@ func TestParseCgroup(t *testing.T) {
 			content:   "0::/libpod_parent/libpod-" + idA + "\n",
 			wantID:    idA,
 			wantUnifd: "/libpod_parent/libpod-" + idA,
+		},
+		{
+			name:      "docker systemd scope",
+			content:   "0::/system.slice/docker-" + idA + ".scope\n",
+			wantID:    idA,
+			wantUnifd: "/system.slice/docker-" + idA + ".scope",
+		},
+		{
+			name:      "docker cgroupfs layout",
+			content:   "0::/docker/" + idA + "\n",
+			wantID:    idA,
+			wantUnifd: "/docker/" + idA,
 		},
 		{
 			name: "hybrid v1 lines plus unified",
@@ -104,6 +118,33 @@ func TestScanProcLowestPIDWins(t *testing.T) {
 	}
 }
 
+func TestScanProcMixedRuntimes(t *testing.T) {
+	procFS := t.TempDir()
+	// Podman (systemd + cgroupfs) alongside Docker (systemd + cgroupfs).
+	writeProcCgroup(t, procFS, 10, "0::/machine.slice/libpod-"+idA+".scope/container")
+	writeProcCgroup(t, procFS, 20, "0::/libpod_parent/libpod-"+idB)
+	writeProcCgroup(t, procFS, 30, "0::/system.slice/docker-"+idC+".scope")
+	writeProcCgroup(t, procFS, 40, "0::/docker/"+idD)
+
+	d := newTestDiscoverer(procFS, t.TempDir())
+	got := d.scanProc()
+
+	if len(got) != 4 {
+		t.Fatalf("expected 4 containers, got %d: %#v", len(got), got)
+	}
+	for _, id := range []string{idA, idB, idC, idD} {
+		if _, ok := got[id]; !ok {
+			t.Errorf("missing container %q", id)
+		}
+	}
+	if got[idC].CgroupPath != "/system.slice/docker-"+idC+".scope" {
+		t.Errorf("unexpected docker systemd cgroup path: %q", got[idC].CgroupPath)
+	}
+	if got[idD].CgroupPath != "/docker/"+idD {
+		t.Errorf("unexpected docker cgroupfs path: %q", got[idD].CgroupPath)
+	}
+}
+
 func TestScanProcEmpty(t *testing.T) {
 	d := newTestDiscoverer(t.TempDir(), t.TempDir())
 	if got := d.scanProc(); len(got) != 0 {
@@ -136,16 +177,46 @@ func TestMergeEnrichment(t *testing.T) {
 	}
 }
 
+func TestMergeEnrichmentDockerRow(t *testing.T) {
+	// Docker's containers/json reports a leading-slash name and no Pod.
+	dockerSocket := []containerRow{
+		{ID: idC, Names: []string{"/nginx"}},
+	}
+	got := mergeEnrichment([][]containerRow{dockerSocket})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 enrichment, got %d: %#v", len(got), got)
+	}
+	if got[idC].Name != "nginx" || got[idC].Pod != "" {
+		t.Errorf("idC = %#v, want nginx/empty", got[idC])
+	}
+}
+
 func TestMergeEnrichmentNoSockets(t *testing.T) {
 	if got := mergeEnrichment(nil); len(got) != 0 {
 		t.Fatalf("expected empty enrichment, got %#v", got)
 	}
 }
 
+func TestEnrichmentSources(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	d := NewDiscoverer("/run/podman/podman.sock", "", "/var/run/docker.sock", t.TempDir(), t.TempDir(), logger)
+
+	sources := d.enrichmentSources()
+	if len(sources) != 2 {
+		t.Fatalf("expected 2 sources, got %d: %#v", len(sources), sources)
+	}
+	if sources[0].socket != "/run/podman/podman.sock" || sources[0].apiPath != podmanAPIPath {
+		t.Errorf("podman source = %#v", sources[0])
+	}
+	if sources[1].socket != "/var/run/docker.sock" || sources[1].apiPath != dockerAPIPath {
+		t.Errorf("docker source = %#v", sources[1])
+	}
+}
+
 func TestListMergesScanAndEnrichment(t *testing.T) {
 	procFS := t.TempDir()
 	writeProcCgroup(t, procFS, 100, "0::/machine.slice/libpod-"+idA+".scope/container")
-	writeProcCgroup(t, procFS, 200, "0::/machine.slice/libpod-"+idB+".scope/container")
+	writeProcCgroup(t, procFS, 200, "0::/system.slice/docker-"+idB+".scope")
 
 	d := newTestDiscoverer(procFS, t.TempDir())
 	// No reachable sockets, so names stay empty but containers still surface.
@@ -168,8 +239,8 @@ func TestListMergesScanAndEnrichment(t *testing.T) {
 
 func newTestDiscoverer(procFS, sysFS string) *Discoverer {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	// An empty glob and an unreachable root socket keep enrichment a no-op.
-	return NewDiscoverer(filepath.Join(sysFS, "no-such.sock"), "", procFS, sysFS, logger)
+	// Empty globs and unreachable sockets keep enrichment a no-op.
+	return NewDiscoverer(filepath.Join(sysFS, "no-such.sock"), "", filepath.Join(sysFS, "no-docker.sock"), procFS, sysFS, logger)
 }
 
 func writeProcCgroup(t *testing.T, procFS string, pid int, content string) {

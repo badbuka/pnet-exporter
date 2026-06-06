@@ -1,4 +1,4 @@
-package podman
+package discovery
 
 import (
 	"context"
@@ -19,20 +19,27 @@ import (
 	"pnet-exporter/internal/identity"
 )
 
-// libpodCgroupRe matches the Podman container cgroup marker in a
-// /proc/<pid>/cgroup line. Container IDs are 64 lowercase hex characters and
-// appear as `libpod-<id>.scope` (systemd) or `libpod-<id>` (cgroupfs). The
-// conmon helper uses `libpod-conmon-<id>.scope`, which never matches because
-// "conmon" is not a 64-char hex run.
-var libpodCgroupRe = regexp.MustCompile(`libpod-([0-9a-f]{64})`)
+// containerCgroupRe matches the container cgroup marker in a
+// /proc/<pid>/cgroup line for both supported runtimes. Container IDs are 64
+// lowercase hex characters. Podman appears as `libpod-<id>.scope` (systemd)
+// or `libpod-<id>` (cgroupfs); Docker appears as `docker-<id>.scope`
+// (systemd driver) or `/docker/<id>` (cgroupfs driver). The conmon helper
+// (`libpod-conmon-<id>.scope`) never matches because "conmon" is not a
+// 64-char hex run.
+var containerCgroupRe = regexp.MustCompile(`(?:libpod-|docker[-/])([0-9a-f]{64})`)
 
-// podmanAPIVersion is the libpod API path prefix. Podman keeps the v4 path
+// podmanAPIPath is the libpod container-list path. Podman keeps the v4 path
 // stable for backward compatibility even on newer daemons.
-const podmanAPIVersion = "v4.0.0"
+const podmanAPIPath = "/v4.0.0/libpod/containers/json"
+
+// dockerAPIPath is the Docker Engine API container-list path. The version is
+// pinned conservatively; the daemon maintains backward compatibility for this
+// endpoint across releases.
+const dockerAPIPath = "/v1.41/containers/json"
 
 // socketDialTimeout bounds both the connect and overall request time when
-// talking to a Podman socket. Unreachable rootless sockets must fail fast so
-// a single discovery tick stays cheap.
+// talking to a runtime socket. Unreachable rootless or absent Docker sockets
+// must fail fast so a single discovery tick stays cheap.
 const socketDialTimeout = 3 * time.Second
 
 // socketContextKey carries the target unix socket path through the request
@@ -44,26 +51,29 @@ type Discoverer struct {
 	procFS          string
 	rootSocket      string
 	userSocketsGlob string
+	dockerSocket    string
 	httpClient      *http.Client
 	logger          *slog.Logger
 }
 
 // NewDiscoverer builds a discoverer that treats the host /proc as the source
-// of truth for which containers exist and queries every reachable Podman
-// socket only to enrich names and pod IDs.
-func NewDiscoverer(socket, userSocketsGlob, procFS, sysFS string, logger *slog.Logger) *Discoverer {
+// of truth for which containers exist and queries every reachable runtime
+// socket (Podman libpod sockets and the Docker Engine socket) only to enrich
+// names and pod IDs.
+func NewDiscoverer(socket, userSocketsGlob, dockerSocket, procFS, sysFS string, logger *slog.Logger) *Discoverer {
 	return &Discoverer{
 		sysFS:           sysFS,
 		procFS:          procFS,
 		rootSocket:      socket,
 		userSocketsGlob: userSocketsGlob,
+		dockerSocket:    dockerSocket,
 		httpClient:      newUnixClient(socketDialTimeout),
 		logger:          logger,
 	}
 }
 
 // List scans /proc for container cgroups, enriches the results with names and
-// pod IDs from every reachable Podman socket, and returns the merged set. It
+// pod IDs from every reachable runtime socket, and returns the merged set. It
 // never fails when /proc is empty or no socket responds; such containers
 // simply surface without a name and fall back to their ID in metric labels.
 func (d *Discoverer) List(ctx context.Context) ([]identity.Container, error) {
@@ -82,9 +92,9 @@ func (d *Discoverer) List(ctx context.Context) ([]identity.Container, error) {
 }
 
 // scanProc walks ${procFS}/<pid>/cgroup for every process and groups the
-// discovered Podman containers by their 64-char ID. The lowest PID per
-// container wins, which is the most stable representative of the container's
-// init process for namespace/cgroup attribution.
+// discovered containers by their 64-char ID. The lowest PID per container
+// wins, which is the most stable representative of the container's init
+// process for namespace/cgroup attribution.
 func (d *Discoverer) scanProc() map[string]identity.Container {
 	entries, err := os.ReadDir(d.procFS)
 	if err != nil {
@@ -135,8 +145,8 @@ func (d *Discoverer) scanProc() map[string]identity.Container {
 
 // parseCgroup extracts the container ID and the cgroup-v2 unified path from
 // the contents of a /proc/<pid>/cgroup file. The ID is taken from any line
-// bearing the libpod marker; the unified path is the "0::" line, used to stat
-// the cgroup directory inode that BPF programs report.
+// bearing a recognized runtime marker; the unified path is the "0::" line,
+// used to stat the cgroup directory inode that BPF programs report.
 func parseCgroup(content string) (id, unifiedPath string) {
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
@@ -144,7 +154,7 @@ func parseCgroup(content string) (id, unifiedPath string) {
 			continue
 		}
 		if id == "" {
-			if m := libpodCgroupRe.FindStringSubmatch(line); m != nil {
+			if m := containerCgroupRe.FindStringSubmatch(line); m != nil {
 				id = m[1]
 			}
 		}
@@ -185,37 +195,45 @@ func (d *Discoverer) namespaceInode(pid int, namespace string) uint64 {
 	return statInode(filepath.Join(d.procFS, strconv.Itoa(pid), "ns", namespace))
 }
 
-// enrichment holds the human-facing metadata a Podman socket can add to a
+// enrichment holds the human-facing metadata a runtime socket can add to a
 // container that /proc only knows by ID.
 type enrichment struct {
 	Name string
 	Pod  string
 }
 
-// enrich queries every candidate Podman socket and merges their container
+// enrichSource is a single socket to probe together with the runtime API path
+// used to list its containers.
+type enrichSource struct {
+	socket  string
+	apiPath string
+}
+
+// enrich queries every candidate runtime socket and merges their container
 // listings into a map keyed by full container ID. Sockets that are missing or
 // unreachable are logged at debug and skipped.
 func (d *Discoverer) enrich(ctx context.Context) map[string]enrichment {
-	sockets := d.candidateSockets()
-	perSocket := make([][]containerRow, 0, len(sockets))
-	for _, socket := range sockets {
-		rows, err := d.querySocket(ctx, socket)
+	sources := d.enrichmentSources()
+	perSocket := make([][]containerRow, 0, len(sources))
+	for _, src := range sources {
+		rows, err := d.querySocket(ctx, src.socket, src.apiPath)
 		if err != nil {
-			d.logger.Debug("podman socket query failed", "socket", socket, "error", err)
+			d.logger.Debug("runtime socket query failed", "socket", src.socket, "error", err)
 			continue
 		}
-		d.logger.Debug("podman socket enriched", "socket", socket, "containers", len(rows))
+		d.logger.Debug("runtime socket enriched", "socket", src.socket, "containers", len(rows))
 		perSocket = append(perSocket, rows)
 	}
 	return mergeEnrichment(perSocket)
 }
 
-// candidateSockets returns the deduplicated list of sockets to probe: the
-// configured root socket followed by every match of the user sockets glob.
-func (d *Discoverer) candidateSockets() []string {
+// enrichmentSources returns the deduplicated list of sockets to probe: the
+// configured root Podman socket, every match of the user sockets glob, and
+// the Docker Engine socket. Each source carries the API path for its runtime.
+func (d *Discoverer) enrichmentSources() []enrichSource {
 	seen := make(map[string]struct{})
-	var sockets []string
-	add := func(path string) {
+	var sources []enrichSource
+	add := func(path, apiPath string) {
 		if path == "" {
 			return
 		}
@@ -223,28 +241,29 @@ func (d *Discoverer) candidateSockets() []string {
 			return
 		}
 		seen[path] = struct{}{}
-		sockets = append(sockets, path)
+		sources = append(sources, enrichSource{socket: path, apiPath: apiPath})
 	}
 
-	add(d.rootSocket)
+	add(d.rootSocket, podmanAPIPath)
 	if d.userSocketsGlob != "" {
 		matches, err := filepath.Glob(d.userSocketsGlob)
 		if err != nil {
 			d.logger.Debug("podman user socket glob failed", "glob", d.userSocketsGlob, "error", err)
 		}
 		for _, match := range matches {
-			add(match)
+			add(match, podmanAPIPath)
 		}
 	}
-	return sockets
+	add(d.dockerSocket, dockerAPIPath)
+	return sources
 }
 
-// querySocket fetches the running container list from a single Podman socket
+// querySocket fetches the running container list from a single runtime socket
 // over HTTP-over-Unix. The socket path travels via the request context so the
 // shared http.Client can target any socket.
-func (d *Discoverer) querySocket(ctx context.Context, socket string) ([]containerRow, error) {
+func (d *Discoverer) querySocket(ctx context.Context, socket, apiPath string) ([]containerRow, error) {
 	ctx = context.WithValue(ctx, socketContextKey{}, socket)
-	url := fmt.Sprintf("http://podman/%s/libpod/containers/json", podmanAPIVersion)
+	url := "http://runtime" + apiPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -257,12 +276,12 @@ func (d *Discoverer) querySocket(ctx context.Context, socket string) ([]containe
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("podman api returned %s", resp.Status)
+		return nil, fmt.Errorf("runtime api returned %s", resp.Status)
 	}
 
 	var rows []containerRow
 	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
-		return nil, fmt.Errorf("decode podman api response: %w", err)
+		return nil, fmt.Errorf("decode runtime api response: %w", err)
 	}
 	return rows, nil
 }
@@ -287,8 +306,9 @@ func mergeEnrichment(perSocket [][]containerRow) map[string]enrichment {
 	return out
 }
 
-// containerRow mirrors the subset of Podman's libpod containers/json
-// ListContainer payload that we consume.
+// containerRow mirrors the subset of the runtime container-list payload that
+// we consume. It fits both Podman's libpod ListContainer response and the
+// Docker Engine API; Docker simply omits the Pod field.
 type containerRow struct {
 	ID    string   `json:"Id"`
 	Names []string `json:"Names"`
@@ -312,7 +332,7 @@ func newUnixClient(timeout time.Duration) *http.Client {
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				socket, _ := ctx.Value(socketContextKey{}).(string)
 				if socket == "" {
-					return nil, errors.New("no podman socket in request context")
+					return nil, errors.New("no runtime socket in request context")
 				}
 				var dialer net.Dialer
 				return dialer.DialContext(ctx, "unix", socket)

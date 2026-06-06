@@ -29,6 +29,27 @@ func TestParseKafkaRequestHeaderTooShort(t *testing.T) {
 	}
 }
 
+func TestParseKafkaResponseCorrelationID(t *testing.T) {
+	// size=8, correlation_id=42, trailing body bytes.
+	buf := []byte{0, 0, 0, 8, 0, 0, 0, 42, 0, 0, 0, 0}
+	id, ok := ParseKafkaResponseCorrelationID(buf)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if id != 42 {
+		t.Fatalf("correlation id: got %d, want 42", id)
+	}
+}
+
+func TestParseKafkaResponseCorrelationIDTooShort(t *testing.T) {
+	if _, ok := ParseKafkaResponseCorrelationID(make([]byte, 7)); ok {
+		t.Fatal("expected false for 7-byte payload")
+	}
+	if _, ok := ParseKafkaResponseCorrelationID(nil); ok {
+		t.Fatal("expected false for nil payload")
+	}
+}
+
 func TestParseKafkaRequestHeaderFieldLayout(t *testing.T) {
 	// size=8, APIKey=1, APIVersion=2, CorrelationID=100
 	buf := []byte{0, 0, 0, 8, 0, 1, 0, 2, 0, 0, 0, 100}

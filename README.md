@@ -1,6 +1,7 @@
 # pnet-exporter
 
-Prometheus exporter for Podman container network visibility, backed by eBPF.
+Prometheus exporter for Podman and Docker container network visibility, backed
+by eBPF.
 
 The repository uses a flat Go layout: `main.go` at the root, runtime code under
 `internal/`, eBPF C sources under `bpf/`.
@@ -10,10 +11,16 @@ The repository uses a flat Go layout: `main.go` at the root, runtime code under
 ### Requirements
 
 - Linux kernel 5.8+ with eBPF support (`CONFIG_BPF_SYSCALL`, `CONFIG_SCHEDSTATS` for delay accounting)
-- Podman running on the host
+- Podman and/or Docker running on the host
 - Root or capabilities: `CAP_BPF`, `CAP_PERFMON`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`
 
-### Run with Docker / Podman
+Both runtimes are supported simultaneously and auto-detected: a `/proc` cgroup
+scan discovers every Podman (`libpod-<id>`) and Docker (`docker-<id>` /
+`/docker/<id>`) container, and whichever runtime sockets are reachable are
+queried only to enrich names. Hosts running just one runtime work unchanged;
+the absent runtime's socket is simply skipped.
+
+### Run with Podman
 
 ```sh
 podman run -d \
@@ -32,6 +39,25 @@ every user on the host (rootful and rootless). To also enrich *rootless*
 container names and pod IDs, additionally mount the user runtime sockets with
 `-v /run/user:/run/user:ro` (matched by `PNET_PODMAN_USER_SOCKETS_GLOB`);
 without them, rootless containers still appear, just keyed by container ID.
+
+### Run with Docker
+
+```sh
+docker run -d \
+  --name pnet-exporter \
+  --privileged \
+  --pid=host \
+  --network=host \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /sys:/sys:ro \
+  -v /proc:/proc:ro \
+  badbuka/pnet-exporter:latest
+```
+
+The Docker socket (`PNET_DOCKER_SOCKET`) is queried only to enrich container
+names; even without it, Docker containers still surface from the `/proc` scan
+keyed by container ID. To monitor both runtimes at once, mount both the Podman
+and Docker sockets in the same invocation.
 
 Verify:
 
@@ -66,17 +92,19 @@ All configuration is via environment variables with the `PNET_` prefix.
 | `PNET_SYSFS` | `/sys` | sysfs root (used by startup checks) |
 | `PNET_PROCFS` | `/proc` | procfs root (used by node and delay collectors) |
 
-### Podman discovery
+### Container discovery
 
 Container discovery is host-wide: a `/proc` cgroup scan is the source of truth
 for which containers exist (it sees every rootful and rootless user's
-containers), and the Podman REST API is used only to enrich names and pod IDs.
-See [Container discovery](#container-discovery) for details.
+containers, for both Podman and Docker), and the Podman/Docker REST APIs are
+used only to enrich names and pod IDs. See
+[Container discovery](#container-discovery) for details.
 
 | Variable | Default | Description |
 |---|---|---|
 | `PNET_PODMAN_SOCKET` | `/run/podman/podman.sock` | Root Podman API socket used for name/pod enrichment |
 | `PNET_PODMAN_USER_SOCKETS_GLOB` | `/run/user/*/podman/podman.sock` | Glob of rootless user Podman sockets to also query for enrichment |
+| `PNET_DOCKER_SOCKET` | `/var/run/docker.sock` | Docker Engine API socket used for name enrichment (Docker has no pods) |
 | `PNET_DISCOVERY_INTERVAL` | `10s` | How often the container list is refreshed |
 | `PNET_CONTAINER_TTL` | `1m` | How long the identity cache retains a container after it stops being reported |
 
@@ -192,21 +220,23 @@ protocol cache remembers content-sniffed L7 verdicts per connection.
 ### Container discovery
 
 Discovery runs every `PNET_DISCOVERY_INTERVAL` and has two stages
-(`internal/podman/discovery.go`):
+(`internal/discovery/discovery.go`):
 
 1. **`/proc` scan (source of truth).** Every `${PNET_PROCFS}/<pid>/cgroup` is
-   read and matched against the Podman `libpod-<64-hex-id>` cgroup marker. This
-   surfaces containers for *all* users - rootful and every rootless user -
-   because it does not depend on any single user's Podman state. For each
-   container the lowest PID is chosen and its cgroup inode (matching
+   read and matched against the Podman `libpod-<64-hex-id>` and Docker
+   `docker-<64-hex-id>` / `/docker/<64-hex-id>` cgroup markers. This surfaces
+   containers for *all* users - rootful and every rootless user, across both
+   runtimes - because it does not depend on any single runtime's daemon state.
+   For each container the lowest PID is chosen and its cgroup inode (matching
    `bpf_get_current_cgroup_id()`) plus net/mnt namespace inodes are recorded.
-2. **Socket enrichment.** The root socket (`PNET_PODMAN_SOCKET`) and every
-   rootless socket matching `PNET_PODMAN_USER_SOCKETS_GLOB` are queried over the
-   Podman REST API to fill in container `name` and `pod_id`. Unreachable sockets
-   are skipped; a container still appears (keyed by ID) even when no socket
-   reports it, just without a friendly name.
+2. **Socket enrichment.** The Podman root socket (`PNET_PODMAN_SOCKET`), every
+   rootless socket matching `PNET_PODMAN_USER_SOCKETS_GLOB`, and the Docker
+   socket (`PNET_DOCKER_SOCKET`) are queried over their respective REST APIs to
+   fill in container `name` (and `pod_id` for Podman). Unreachable or absent
+   sockets are skipped; a container still appears (keyed by ID) even when no
+   socket reports it, just without a friendly name.
 
-There is no dependency on the `podman` CLI binary.
+There is no dependency on the `podman` or `docker` CLI binaries.
 
 ## Metrics
 
@@ -373,9 +403,9 @@ cardinality will show an aggregated `~other` node rather than every endpoint.
 
 ## Design choices
 
-- Discovery is Podman-only (no docker/containerd/CRI-O integrations), but it
+- Discovery supports Podman and Docker (no containerd/CRI-O integrations), and
   covers every user on the host via a `/proc` cgroup scan rather than a single
-  user's `podman ps`.
+  user's `podman ps` / `docker ps`.
 - L7 protocols are classified and parsed in Go from captured payloads; BPF
   only gathers bytes and socket tuples. HTTP is additionally autodiscovered by
   content sniffing on unregistered ports (HTTP/1.x and cleartext HTTP/2).

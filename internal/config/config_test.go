@@ -14,6 +14,12 @@ func TestDefaultPodmanUserSocketsGlob(t *testing.T) {
 	}
 }
 
+func TestDefaultDockerSocket(t *testing.T) {
+	if got := Default().DockerSocket; got != "/var/run/docker.sock" {
+		t.Fatalf("unexpected default docker socket: %q", got)
+	}
+}
+
 func TestDefaultIsIndependentOfEnvironment(t *testing.T) {
 	t.Setenv("PNET_LISTEN_ADDRESS", "0.0.0.0:1234")
 	cfg := Default()
