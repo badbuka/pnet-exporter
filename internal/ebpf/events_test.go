@@ -3,7 +3,6 @@ package ebpf
 import (
 	"encoding/binary"
 	"testing"
-	"time"
 
 	"pnet-exporter/internal/store"
 )
@@ -105,17 +104,6 @@ func TestToStoreEventActualDestination(t *testing.T) {
 	}
 }
 
-func TestNATCachePutLookup(t *testing.T) {
-	cache := NewNATCache(0)
-	cache.Put("svc.cluster:80", "10.0.0.5:80")
-	if got := cache.Lookup("svc.cluster:80"); got != "10.0.0.5:80" {
-		t.Fatalf("lookup: %s", got)
-	}
-	if got := cache.Lookup("unknown:80"); got != "unknown:80" {
-		t.Fatalf("fallback: %s", got)
-	}
-}
-
 func TestDecodeTCPEventIPv6(t *testing.T) {
 	buf := make([]byte, tcpEventWireSize)
 	buf[0] = byte(EventTCPSuccessfulConnect)
@@ -130,27 +118,6 @@ func TestDecodeTCPEventIPv6(t *testing.T) {
 	}
 	if got := event.Tuple.Destination(); got != "[::1]:443" {
 		t.Fatalf("IPv6 destination: got %q, want [::1]:443", got)
-	}
-}
-
-func TestNATCachePruneTTL(t *testing.T) {
-	cache := NewNATCache(time.Second)
-	now := time.Now()
-	cache.Put("svc:80", "10.0.0.1:80")
-	cache.Prune(now.Add(2 * time.Second))
-	// After pruning, Lookup must fall back to the original key.
-	if got := cache.Lookup("svc:80"); got != "svc:80" {
-		t.Fatalf("expected fallback after prune, got %q", got)
-	}
-}
-
-func TestNATCachePruneRetainsRecent(t *testing.T) {
-	cache := NewNATCache(time.Second)
-	now := time.Now()
-	cache.Put("svc:80", "10.0.0.1:80")
-	cache.Prune(now.Add(-time.Second)) // prune time before TTL
-	if got := cache.Lookup("svc:80"); got != "10.0.0.1:80" {
-		t.Fatalf("expected stored destination before TTL, got %q", got)
 	}
 }
 

@@ -131,7 +131,7 @@ func dnsAEvent(family uint16) DNSWireEvent {
 
 func TestDispatchDNSDropsAAAAMappingWhenDisabled(t *testing.T) {
 	loader, metricStore, cache := newTestLoader(t, true)
-	cache.Upsert(identity.Container{ID: "abc", Name: "web", CgroupID: 200})
+	cache.Replace([]identity.Container{identity.Container{ID: "abc", Name: "web", CgroupID: 200}})
 
 	// AAAA answer over IPv4 transport: the mapping itself is IPv6 and must drop.
 	loader.dispatchDNS(dnsAAAAEvent(familyIPv4))
@@ -142,7 +142,7 @@ func TestDispatchDNSDropsAAAAMappingWhenDisabled(t *testing.T) {
 
 func TestDispatchDNSDropsAAAARequestWhenDisabled(t *testing.T) {
 	loader, metricStore, cache := newTestLoader(t, true)
-	cache.Upsert(identity.Container{ID: "abc", Name: "web", CgroupID: 200})
+	cache.Replace([]identity.Container{identity.Container{ID: "abc", Name: "web", CgroupID: 200}})
 
 	// AAAA question over IPv4 transport: the request itself is for an IPv6
 	// address and must not produce a container_dns_requests_total series.
@@ -154,7 +154,7 @@ func TestDispatchDNSDropsAAAARequestWhenDisabled(t *testing.T) {
 
 func TestDispatchDNSKeepsAAAAMappingWhenEnabled(t *testing.T) {
 	loader, metricStore, cache := newTestLoader(t, false)
-	cache.Upsert(identity.Container{ID: "abc", Name: "web", CgroupID: 200})
+	cache.Replace([]identity.Container{identity.Container{ID: "abc", Name: "web", CgroupID: 200}})
 
 	loader.dispatchDNS(dnsAAAAEvent(familyIPv4))
 	snap := metricStore.Snapshot()
@@ -168,7 +168,7 @@ func TestDispatchDNSKeepsAAAAMappingWhenEnabled(t *testing.T) {
 
 func TestDispatchDNSKeepsIPv4DataOverIPv6Transport(t *testing.T) {
 	loader, metricStore, cache := newTestLoader(t, true)
-	cache.Upsert(identity.Container{ID: "abc", Name: "web", CgroupID: 200})
+	cache.Replace([]identity.Container{identity.Container{ID: "abc", Name: "web", CgroupID: 200}})
 
 	// Resolvers commonly use an AF_INET6 socket even for A-record lookups,
 	// so a DNS event over IPv6 transport must NOT discard its IPv4 data.

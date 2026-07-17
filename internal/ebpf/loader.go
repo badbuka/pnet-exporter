@@ -121,12 +121,12 @@ type Loader struct {
 	identity *identity.Cache
 	store    *store.Store
 	logger   *slog.Logger
-	nat      *NATCache
+	nat      *ttlCache[string, string]
 
 	classifier protocol.Classifier
 	tracker    *protocol.RequestTracker
-	flows      *flowProtocols
-	urls       *requestURLs
+	flows      *ttlCache[SocketTuple, store.Protocol]
+	urls       *ttlCache[urlFlowKey, string]
 
 	// dropIPv6, when true, discards every IPv6-bearing metric before it
 	// reaches the store (IPv6 connection tuples, IPv6 DNS transport, and
@@ -157,18 +157,34 @@ func NewLoader(cfg config.EBPFConfig, classifier protocol.Classifier, identity *
 		identity:   identity,
 		store:      metricStore,
 		logger:     logger,
-		nat:        NewNATCache(5 * time.Minute),
+		nat:        newTTLCache[string, string](5 * time.Minute),
 		classifier: classifier,
 		tracker:    protocol.NewRequestTracker(30 * time.Second),
-		flows:      newFlowProtocols(5 * time.Minute),
-		urls:       newRequestURLs(30 * time.Second),
+		flows:      newTTLCache[SocketTuple, store.Protocol](5 * time.Minute),
+		urls:       newTTLCache[urlFlowKey, string](30 * time.Second),
 		dropIPv6:   dropIPv6,
 	}
 }
 
-// NATCache exposes the loader's NAT cache so other components (latency
-// prober, integration tests) can consult or seed it.
-func (l *Loader) NATCache() *NATCache { return l.nat }
+// urlFlowKey identifies an in-flight request flow for associating a parsed
+// request URL (only available on the request) with the later response, where
+// the metric is actually emitted. It mirrors the destination fields of
+// protocol.RequestKey but omits the correlation token, which differs between
+// the HTTP request and response payloads.
+type urlFlowKey struct {
+	containerID       string
+	destination       string
+	actualDestination string
+}
+
+// actualDestination resolves the post-DNAT destination for dst, falling back
+// to dst itself when no conntrack mapping is known.
+func (l *Loader) actualDestination(dst string) string {
+	if actual, ok := l.nat.get(dst); ok {
+		return actual
+	}
+	return dst
+}
 
 func (l *Loader) dispatchTCP(event TCPEvent) {
 	if l.dropIPv6 && event.Tuple.IsIPv6() {
@@ -176,7 +192,7 @@ func (l *Loader) dispatchTCP(event TCPEvent) {
 	}
 	container := l.resolveContainer(event.CgroupID, event.PID)
 	dst := event.Tuple.Destination()
-	actual := l.nat.Lookup(dst)
+	actual := l.actualDestination(dst)
 	storeEvent := event.ToStoreEvent(container, actual)
 
 	switch event.Kind {
@@ -226,7 +242,7 @@ func (l *Loader) dispatchNAT(event NATEvent) {
 	if original == "" || actual == "" || original == actual {
 		return
 	}
-	l.nat.Put(original, actual)
+	l.nat.put(original, actual)
 }
 
 func (l *Loader) dispatchL7(event L7Event) {
@@ -238,7 +254,7 @@ func (l *Loader) dispatchL7(event L7Event) {
 		return
 	}
 	dst := event.Tuple.Destination()
-	actual := l.nat.Lookup(dst)
+	actual := l.actualDestination(dst)
 
 	proto, _ := l.classifier.ProtocolForPort(event.Tuple.DestinationPort)
 	if proto == "" {
@@ -249,11 +265,11 @@ func (l *Loader) dispatchL7(event L7Event) {
 	// protocols (HTTP/2) attribute later, non-self-identifying packets on
 	// the same connection.
 	if proto == "" {
-		if cached, ok := l.flows.Get(event.Tuple); ok {
+		if cached, ok := l.flows.getRefresh(event.Tuple); ok {
 			proto = cached
 		} else if sniffed, ok := sniffProtocol(event.Direction, event.Payload); ok {
 			proto = sniffed
-			l.flows.Put(event.Tuple, sniffed)
+			l.flows.put(event.Tuple, sniffed)
 		}
 	}
 	if proto == "" {
@@ -309,8 +325,8 @@ func (l *Loader) handleProtocolRequest(proto store.Protocol, event L7Event, cont
 	l.tracker.Start(key, time.Now())
 
 	if proto == store.ProtocolHTTP {
-		if request, ok := protocol.ParseHTTPRequest(event.Payload); ok {
-			l.urls.Put(urlFlowKey{
+		if request, ok := protocol.ParseHTTPRequest(event.Payload); ok && request.URL != "" {
+			l.urls.put(urlFlowKey{
 				containerID:       container.ContainerID,
 				destination:       dst,
 				actualDestination: actual,
@@ -338,7 +354,7 @@ func (l *Loader) handleProtocolResponse(proto store.Protocol, event L7Event, con
 
 	url := ""
 	if proto == store.ProtocolHTTP {
-		url, _ = l.urls.Take(urlFlowKey{
+		url, _ = l.urls.take(urlFlowKey{
 			containerID:       container.ContainerID,
 			destination:       dst,
 			actualDestination: actual,

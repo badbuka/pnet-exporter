@@ -12,20 +12,7 @@ type Container struct {
 	PID          int
 	CgroupID     uint64
 	CgroupPath   string
-	NetNSInode   uint64
-	MountNSInode uint64
-	StartedAt    time.Time
 	LastObserved time.Time
-}
-
-type Labels struct {
-	ContainerID   string
-	ContainerName string
-	PodID         string
-}
-
-func (l Labels) Values() []string {
-	return []string{l.ContainerID, l.ContainerName, l.PodID}
 }
 
 type Cache struct {
@@ -34,7 +21,6 @@ type Cache struct {
 	byID     map[string]Container
 	byPID    map[int]string
 	byCgroup map[uint64]string
-	byNetNS  map[uint64]string
 }
 
 func NewCache(ttl time.Duration) *Cache {
@@ -43,7 +29,6 @@ func NewCache(ttl time.Duration) *Cache {
 		byID:     make(map[string]Container),
 		byPID:    make(map[int]string),
 		byCgroup: make(map[uint64]string),
-		byNetNS:  make(map[uint64]string),
 	}
 }
 
@@ -71,15 +56,6 @@ func (c *Cache) Replace(containers []Container) {
 	c.reindex()
 }
 
-func (c *Cache) Upsert(container Container) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	container.LastObserved = time.Now()
-	c.byID[container.ID] = container
-	c.reindex()
-}
-
 func (c *Cache) ByPID(pid int) (Container, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -97,18 +73,6 @@ func (c *Cache) ByCgroupID(cgroupID uint64) (Container, bool) {
 	defer c.mu.RUnlock()
 
 	id, ok := c.byCgroup[cgroupID]
-	if !ok {
-		return Container{}, false
-	}
-	container, ok := c.byID[id]
-	return container, ok
-}
-
-func (c *Cache) ByNetNS(netNS uint64) (Container, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	id, ok := c.byNetNS[netNS]
 	if !ok {
 		return Container{}, false
 	}
@@ -140,25 +104,9 @@ func (c *Cache) LiveContainerIDs() map[string]struct{} {
 	return ids
 }
 
-func (c *Cache) LabelsFor(containerID string) Labels {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	container, ok := c.byID[containerID]
-	if !ok {
-		return Labels{ContainerID: containerID}
-	}
-	return Labels{
-		ContainerID:   container.ID,
-		ContainerName: container.Name,
-		PodID:         container.PodID,
-	}
-}
-
 func (c *Cache) reindex() {
 	c.byPID = make(map[int]string, len(c.byID))
 	c.byCgroup = make(map[uint64]string, len(c.byID))
-	c.byNetNS = make(map[uint64]string, len(c.byID))
 
 	for id, container := range c.byID {
 		if container.PID > 0 {
@@ -166,9 +114,6 @@ func (c *Cache) reindex() {
 		}
 		if container.CgroupID > 0 {
 			c.byCgroup[container.CgroupID] = id
-		}
-		if container.NetNSInode > 0 {
-			c.byNetNS[container.NetNSInode] = id
 		}
 	}
 }

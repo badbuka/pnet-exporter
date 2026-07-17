@@ -259,9 +259,9 @@ func (l *Loader) runCacheJanitor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			l.nat.Prune(now)
-			l.flows.Prune(now)
-			l.urls.Prune(now)
+			l.nat.prune(now)
+			l.flows.prune(now)
+			l.urls.prune(now)
 		}
 	}
 }

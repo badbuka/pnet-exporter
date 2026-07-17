@@ -88,7 +88,6 @@ All configuration is via environment variables with the `PNET_` prefix.
 | `PNET_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `PNET_SHUTDOWN_TIMEOUT` | `10s` | Graceful HTTP shutdown timeout |
 | `PNET_BPF_DIR` | `./bpf` | Directory containing compiled `.bpf.o` objects |
-| `PNET_RING_BUFFER_SIZE` | `1048576` | BPF ring buffer size hint (bytes) |
 | `PNET_SYSFS` | `/sys` | sysfs root (used by startup checks) |
 | `PNET_PROCFS` | `/proc` | procfs root (used by node and delay collectors) |
 

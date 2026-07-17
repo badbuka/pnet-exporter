@@ -20,6 +20,8 @@ contents:
     dst: /usr/lib/pnet-exporter/bpf/tcp_retransmit.bpf.o
   - src: ./pkg-staging/usr/lib/pnet-exporter/bpf/tcp_bytes.bpf.o
     dst: /usr/lib/pnet-exporter/bpf/tcp_bytes.bpf.o
+  - src: ./pkg-staging/usr/lib/pnet-exporter/bpf/tcp_inbound.bpf.o
+    dst: /usr/lib/pnet-exporter/bpf/tcp_inbound.bpf.o
   - src: ./pkg-staging/usr/lib/pnet-exporter/bpf/tcp_conntrack.bpf.o
     dst: /usr/lib/pnet-exporter/bpf/tcp_conntrack.bpf.o
   - src: ./pkg-staging/usr/lib/pnet-exporter/bpf/l7.bpf.o

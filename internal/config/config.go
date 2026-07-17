@@ -85,8 +85,7 @@ type ResourcesConfig struct {
 }
 
 type EBPFConfig struct {
-	BPFDir         string
-	RingBufferSize int
+	BPFDir string
 }
 
 // envConfig is the flat struct envconfig reads from PNET_* variables.
@@ -131,7 +130,6 @@ type envConfig struct {
 	DelayInterval             time.Duration `envconfig:"DELAY_INTERVAL"                 default:"15s"`
 	ResourcesInterval         time.Duration `envconfig:"RESOURCES_INTERVAL"             default:"15s"`
 	BPFDir                    string        `envconfig:"BPF_DIR"                        default:"./bpf"`
-	RingBufferSize            int           `envconfig:"RING_BUFFER_SIZE"               default:"1048576"`
 	HTTPPorts                 string        `envconfig:"HTTP_PORTS"                     default:""`
 	PostgresPorts             string        `envconfig:"POSTGRES_PORTS"                 default:""`
 	RedisPorts                string        `envconfig:"REDIS_PORTS"                    default:""`
@@ -200,9 +198,6 @@ func (c Config) Validate() error {
 	}
 	if c.Resources.Interval <= 0 {
 		return errors.New("PNET_RESOURCES_INTERVAL must be positive")
-	}
-	if c.EBPF.RingBufferSize <= 0 {
-		return errors.New("PNET_RING_BUFFER_SIZE must be positive")
 	}
 	return nil
 }
@@ -287,8 +282,7 @@ func (e envConfig) toConfig() (Config, error) {
 			Interval: e.ResourcesInterval,
 		},
 		EBPF: EBPFConfig{
-			BPFDir:         e.BPFDir,
-			RingBufferSize: e.RingBufferSize,
+			BPFDir: e.BPFDir,
 		},
 		Protocols: ProtocolsConfig{
 			HTTPPorts:     httpPorts,
@@ -360,16 +354,13 @@ func parsePorts(value string) ([]uint16, error) {
 }
 
 func parseLogLevel(value string) (slog.Level, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "debug":
-		return slog.LevelDebug, nil
-	case "info", "":
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
 		return slog.LevelInfo, nil
-	case "warn", "warning":
-		return slog.LevelWarn, nil
-	case "error":
-		return slog.LevelError, nil
-	default:
+	}
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(trimmed)); err != nil {
 		return 0, fmt.Errorf("unknown level %q", value)
 	}
+	return level, nil
 }

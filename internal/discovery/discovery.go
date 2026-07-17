@@ -130,13 +130,10 @@ func (d *Discoverer) scanProc() map[string]identity.Container {
 	for id, pid := range lowestPID {
 		cgroupPath := cgroupPaths[id]
 		container := identity.Container{
-			ID:           id,
-			PID:          pid,
-			CgroupPath:   cgroupPath,
-			CgroupID:     d.cgroupID(cgroupPath),
-			NetNSInode:   d.namespaceInode(pid, "net"),
-			MountNSInode: d.namespaceInode(pid, "mnt"),
-			StartedAt:    d.cgroupModTime(cgroupPath),
+			ID:         id,
+			PID:        pid,
+			CgroupPath: cgroupPath,
+			CgroupID:   d.cgroupID(cgroupPath),
 		}
 		containers[id] = container
 	}
@@ -172,27 +169,6 @@ func (d *Discoverer) cgroupID(unifiedPath string) uint64 {
 		return 0
 	}
 	return statInode(filepath.Join(d.sysFS, "fs", "cgroup", unifiedPath))
-}
-
-// cgroupModTime uses the cgroup directory mtime as a stand-in for the
-// container start time. It avoids parsing /proc/<pid>/stat clock ticks and is
-// good enough for ordering and freshness.
-func (d *Discoverer) cgroupModTime(unifiedPath string) time.Time {
-	if unifiedPath == "" {
-		return time.Time{}
-	}
-	info, err := os.Stat(filepath.Join(d.sysFS, "fs", "cgroup", unifiedPath))
-	if err != nil {
-		return time.Time{}
-	}
-	return info.ModTime()
-}
-
-func (d *Discoverer) namespaceInode(pid int, namespace string) uint64 {
-	if pid <= 0 {
-		return 0
-	}
-	return statInode(filepath.Join(d.procFS, strconv.Itoa(pid), "ns", namespace))
 }
 
 // enrichment holds the human-facing metadata a runtime socket can add to a
