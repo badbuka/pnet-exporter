@@ -44,7 +44,7 @@ RUN set -eux; \
 # ----------------------------------------------------------------------------
 # Stage 2: build the Go binary.
 # ----------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26.4-bookworm AS go-builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26.5-bookworm AS go-builder
 
 ARG TARGETARCH
 ARG VERSION=dev
