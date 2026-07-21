@@ -95,10 +95,7 @@ func pingFromNetns(pid int, targets []string, timeout time.Duration, baseSeq uin
 		// target streaming wrong-seq replies would otherwise stall the
 		// single-threaded prober past its timeout.
 		deadline := sentAt.Add(timeout)
-		for {
-			if time.Now().After(deadline) {
-				break
-			}
+		for !time.Now().After(deadline) {
 			n, from, err := unix.Recvfrom(fd, buf, 0)
 			if err != nil {
 				break
