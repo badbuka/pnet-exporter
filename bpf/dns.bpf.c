@@ -17,6 +17,8 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 struct dns_recv_args {
 	struct sock *sk;
 	struct msghdr *msg;
+	__u64 iov_base;
+	__u64 iov_len;
 };
 
 struct {
@@ -215,6 +217,7 @@ int BPF_KPROBE(dns_udp_recvmsg_entry, struct sock *sk, struct msghdr *msg)
 	if (!sk || !msg)
 		return 0;
 	struct dns_recv_args args = { .sk = sk, .msg = msg };
+	pnet_stash_first_iov(msg, &args.iov_base, &args.iov_len);
 	__u64 id = bpf_get_current_pid_tgid();
 	bpf_map_update_elem(&dns_active_recv, &id, &args, BPF_ANY);
 	return 0;
@@ -229,6 +232,8 @@ int BPF_KRETPROBE(dns_udp_recvmsg, int ret)
 		return 0;
 	struct sock *sk = args->sk;
 	struct msghdr *msg = args->msg;
+	__u64 iov_base = args->iov_base;
+	__u64 iov_len = args->iov_len;
 	bpf_map_delete_elem(&dns_active_recv, &id);
 
 	if (ret <= 0 || !sk || !msg)
@@ -244,8 +249,9 @@ int BPF_KRETPROBE(dns_udp_recvmsg, int ret)
 	event->cgroup_id = current_cgroup_id();
 	event->pid = id >> 32;
 	fill_tuple(&event->tuple, sk, msg);
-	if (copy_dns_payload(msg, event->payload, &event->payload_len,
-			     (__u32)ret) < 0) {
+	if (pnet_copy_saved_payload(iov_base, iov_len, event->payload,
+				    &event->payload_len, (__u32)ret,
+				    PNET_DNS_PAYLOAD_BYTES) < 0) {
 		bpf_ringbuf_discard(event, 0);
 		return 0;
 	}

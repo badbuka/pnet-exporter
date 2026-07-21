@@ -1,12 +1,16 @@
 package discovery
 
 import (
+	"context"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 )
 
 const (
@@ -251,5 +255,57 @@ func writeProcCgroup(t *testing.T, procFS string, pid int, content string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "cgroup"), []byte(content+"\n"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// serveRuntimeSocket starts an HTTP-over-unix fake runtime returning the
+// given container rows as JSON, and returns the socket path.
+func serveRuntimeSocket(t *testing.T, rows string) string {
+	t.Helper()
+	socket := filepath.Join(os.TempDir(), "pnet-test-"+strconv.Itoa(os.Getpid())+strconv.Itoa(int(time.Now().UnixNano()%1e6))+".sock")
+	t.Cleanup(func() { _ = os.Remove(socket) })
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		_ = http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(rows))
+		}))
+	}()
+	return socket
+}
+
+// TestQuerySocketHitsDistinctRuntimes guards the DisableKeepAlives fix:
+// two sequential queries against different unix sockets must each reach
+// their own runtime rather than reusing the first connection.
+func TestQuerySocketHitsDistinctRuntimes(t *testing.T) {
+	socketA := serveRuntimeSocket(t, `[{"Id":"aaa","Names":["/web-a"]}]`)
+	socketB := serveRuntimeSocket(t, `[{"Id":"bbb","Names":["/web-b"]}]`)
+
+	d := &Discoverer{httpClient: newUnixClient(5 * time.Second), logger: slog.Default()}
+
+	rowsA, err := d.querySocket(context.Background(), socketA, "/v4.0.0/libpod/containers/json")
+	if err != nil {
+		t.Fatalf("query A: %v", err)
+	}
+	rowsB, err := d.querySocket(context.Background(), socketB, "/v4.0.0/libpod/containers/json")
+	if err != nil {
+		t.Fatalf("query B: %v", err)
+	}
+	if len(rowsA) != 1 || rowsA[0].ID != "aaa" {
+		t.Fatalf("rows A: %#v", rowsA)
+	}
+	if len(rowsB) != 1 || rowsB[0].ID != "bbb" {
+		t.Fatalf("rows B: %#v (keep-alive reuse hit the wrong runtime)", rowsB)
+	}
+}
+
+func TestQuerySocketMissingSocket(t *testing.T) {
+	d := &Discoverer{httpClient: newUnixClient(500 * time.Millisecond), logger: slog.Default()}
+	if _, err := d.querySocket(context.Background(), filepath.Join(t.TempDir(), "nope.sock"), "/x"); err == nil {
+		t.Fatal("expected error for missing socket")
 	}
 }

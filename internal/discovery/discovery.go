@@ -305,6 +305,11 @@ func newUnixClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
+			// Every request targets the same fake address ("runtime:80"),
+			// so a pooled keep-alive connection would be reused against a
+			// different runtime socket than the request intends. Disable
+			// keep-alives: the socket path travels via DialContext only.
+			DisableKeepAlives: true,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				socket, _ := ctx.Value(socketContextKey{}).(string)
 				if socket == "" {

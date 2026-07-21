@@ -55,3 +55,11 @@ func (t *RequestTracker) Prune(now time.Time) {
 		}
 	}
 }
+
+// Len reports the number of in-flight requests; intended for tests and
+// diagnostics.
+func (t *RequestTracker) Len() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.requests)
+}

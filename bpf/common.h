@@ -133,4 +133,44 @@ pnet_msghdr_iov(struct msghdr *msg)
 	return iov;
 }
 
+/*
+ * pnet_stash_first_iov records the base/len of the first iovec backing
+ * msg. recvmsg kretprobes must use this snapshot taken at kprobe entry:
+ * by the time the kretprobe runs the kernel has advanced msg->msg_iter
+ * past the received bytes, so reading the iterator then either fails
+ * (buffer exactly filled) or points at the wrong iovec.
+ */
+static __always_inline void pnet_stash_first_iov(struct msghdr *msg,
+						 __u64 *base, __u64 *len)
+{
+	const struct iovec *iov = pnet_msghdr_iov(msg);
+	*base = 0;
+	*len = 0;
+	if (!iov)
+		return;
+	bpf_probe_read_kernel(base, sizeof(*base), &iov->iov_base);
+	bpf_probe_read_kernel(len, sizeof(*len), &iov->iov_len);
+}
+
+/*
+ * pnet_copy_saved_payload reads up to cap bytes from a user buffer
+ * captured via pnet_stash_first_iov. max_len caps the read to the bytes
+ * the kernel actually transferred (the recvmsg return value).
+ */
+static __always_inline int pnet_copy_saved_payload(__u64 base, __u64 len,
+						   __u8 *dst, __u16 *out_len,
+						   __u32 max_len, __u32 cap)
+{
+	if (base == 0 || len == 0)
+		return -1;
+	if (max_len > 0 && (__u64)max_len < len)
+		len = max_len;
+	if (len > cap)
+		len = cap;
+	if (bpf_probe_read_user(dst, len, (const void *)(unsigned long)base) < 0)
+		return -1;
+	*out_len = (__u16)len;
+	return 0;
+}
+
 #endif

@@ -199,3 +199,22 @@ func TestParseHTTPStatusErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestHPACKInt(t *testing.T) {
+	// RFC 7541 C.1: value 10 with 5-bit prefix fits in one byte.
+	if v, n, ok := hpackInt([]byte{0x0a}, 5); !ok || v != 10 || n != 1 {
+		t.Errorf("single byte: got %d/%d/%v", v, n, ok)
+	}
+	// RFC 7541 C.2.1: 1337 with 5-bit prefix = 0x1f 0x9a 0x0a.
+	if v, n, ok := hpackInt([]byte{0x1f, 0x9a, 0x0a}, 5); !ok || v != 1337 || n != 3 {
+		t.Errorf("multi byte: got %d/%d/%v", v, n, ok)
+	}
+	// Saturated prefix but continuation bytes missing.
+	if _, _, ok := hpackInt([]byte{0x1f}, 5); ok {
+		t.Error("truncated continuation must fail")
+	}
+	// Empty buffer.
+	if _, _, ok := hpackInt(nil, 5); ok {
+		t.Error("empty buffer must fail")
+	}
+}

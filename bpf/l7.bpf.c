@@ -30,7 +30,8 @@ struct {
  */
 struct l7_recv_args {
 	struct sock *sk;
-	struct msghdr *msg;
+	__u64 iov_base;
+	__u64 iov_len;
 };
 
 struct {
@@ -138,7 +139,8 @@ int BPF_KPROBE(l7_tcp_recvmsg_entry, struct sock *sk, struct msghdr *msg)
 {
 	if (!sk || !msg)
 		return 0;
-	struct l7_recv_args args = { .sk = sk, .msg = msg };
+	struct l7_recv_args args = { .sk = sk };
+	pnet_stash_first_iov(msg, &args.iov_base, &args.iov_len);
 	__u64 id = bpf_get_current_pid_tgid();
 	bpf_map_update_elem(&l7_active_recv, &id, &args, BPF_ANY);
 	return 0;
@@ -153,10 +155,11 @@ int BPF_KRETPROBE(l7_tcp_recvmsg, int ret)
 	if (!args)
 		return 0;
 	struct sock *sk = args->sk;
-	struct msghdr *msg = args->msg;
+	__u64 iov_base = args->iov_base;
+	__u64 iov_len = args->iov_len;
 	bpf_map_delete_elem(&l7_active_recv, &pid_tgid);
 
-	if (ret <= 0 || !sk || !msg)
+	if (ret <= 0 || !sk)
 		return 0;
 
 	struct flow_key key = {
@@ -182,8 +185,9 @@ int BPF_KRETPROBE(l7_tcp_recvmsg, int ret)
 	event->pid = pid_tgid >> 32;
 	event->elapsed_ns = elapsed;
 	fill_tuple(&event->tuple, sk);
-	if (copy_iov_payload(msg, event->payload, &event->payload_len,
-			     (__u32)ret) < 0) {
+	if (pnet_copy_saved_payload(iov_base, iov_len, event->payload,
+				    &event->payload_len, (__u32)ret,
+				    PNET_L7_PAYLOAD_BYTES) < 0) {
 		bpf_ringbuf_discard(event, 0);
 		return 0;
 	}

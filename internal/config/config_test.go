@@ -61,6 +61,17 @@ func TestLoadRejectsInvalidBuckets(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsNonFiniteBuckets(t *testing.T) {
+	for _, value := range []string{"0.1,+Inf", "NaN", "0.1,-Inf"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("PNET_DURATION_BUCKETS", value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("expected non-finite bucket %q to be rejected", value)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsUnknownLogLevel(t *testing.T) {
 	t.Setenv("PNET_LOG_LEVEL", "verbose")
 

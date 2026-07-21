@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"pnet-exporter/internal/identity"
 )
 
 func writeSchedStat(t *testing.T, root string, pid int, content string) {
@@ -87,5 +89,25 @@ func TestReadSchedStatMissingFile(t *testing.T) {
 	root := t.TempDir()
 	if _, _, err := readSchedStat(root, 999); err == nil {
 		t.Fatal("expected error for non-existent schedstat file")
+	}
+}
+
+func TestCgroupPIDsUsesConfiguredSysRoot(t *testing.T) {
+	sysRoot := t.TempDir()
+	dir := filepath.Join(sysRoot, "fs", "cgroup", "kubepods", "pod123")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte("101\n102\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewReader(t.TempDir(), sysRoot, nil, nil, 0, nil)
+	pids, err := r.cgroupPIDs(identity.Container{ID: "c1", CgroupPath: "/kubepods/pod123"})
+	if err != nil {
+		t.Fatalf("cgroupPIDs: %v", err)
+	}
+	if len(pids) != 2 || pids[0] != 101 || pids[1] != 102 {
+		t.Fatalf("pids: got %v", pids)
 	}
 }

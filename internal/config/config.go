@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -308,6 +309,9 @@ func parseBuckets(value string) ([]float64, error) {
 		bucket, err := strconv.ParseFloat(trimmed, 64)
 		if err != nil {
 			return nil, err
+		}
+		if math.IsNaN(bucket) || math.IsInf(bucket, 0) {
+			return nil, fmt.Errorf("bucket %s must be finite", trimmed)
 		}
 		if bucket <= 0 {
 			return nil, fmt.Errorf("bucket %s must be positive", trimmed)

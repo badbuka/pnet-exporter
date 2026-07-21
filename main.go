@@ -92,7 +92,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 
 	if cfg.Features.DelayAccounting {
-		delayReader := delays.NewReader(cfg.ProcFS, identityCache, metricStore, cfg.Delays.Interval, logger)
+		delayReader := delays.NewReader(cfg.ProcFS, cfg.SysFS, identityCache, metricStore, cfg.Delays.Interval, logger)
 		go delayReader.Run(ctx)
 	}
 

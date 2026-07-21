@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -413,5 +414,104 @@ func TestFQDNCeilingOverflow(t *testing.T) {
 	}
 	if !overflowFound {
 		t.Fatal("expected ~other overflow entry for second FQDN")
+	}
+}
+
+func TestTCPCountersAndActiveGauge(t *testing.T) {
+	st := New(config.Default().Store)
+	labels := ContainerLabels{ContainerID: "c1"}
+	event := TCPEvent{Container: labels, Endpoint: Endpoint{Destination: "10.0.0.1:443"}}
+
+	st.IncFailedConnect(event)
+	st.IncFailedConnect(event)
+	st.IncRetransmit(event)
+	st.AddBytesSent(TCPEvent{Container: labels, Endpoint: Endpoint{Destination: "10.0.0.1:443"}, Bytes: 100})
+	st.AddBytesReceived(TCPEvent{Container: labels, Endpoint: Endpoint{Destination: "10.0.0.1:443"}, Bytes: 250})
+	st.AddBytesSent(TCPEvent{Container: labels, Endpoint: Endpoint{Destination: "10.0.0.1:443"}, Bytes: 50})
+
+	snap := st.Snapshot()
+	if len(snap.Failed) != 1 || snap.Failed[0].Value != 2 {
+		t.Fatalf("failed connects: %#v", snap.Failed)
+	}
+	if len(snap.Retransmits) != 1 || snap.Retransmits[0].Value != 1 {
+		t.Fatalf("retransmits: %#v", snap.Retransmits)
+	}
+	if len(snap.BytesSent) != 1 || snap.BytesSent[0].Value != 150 {
+		t.Fatalf("bytes sent: %#v", snap.BytesSent)
+	}
+	if len(snap.BytesReceived) != 1 || snap.BytesReceived[0].Value != 250 {
+		t.Fatalf("bytes received: %#v", snap.BytesReceived)
+	}
+}
+
+func TestActiveConnectionGaugeClampsAtZero(t *testing.T) {
+	st := New(config.Default().Store)
+	labels := ContainerLabels{ContainerID: "c1"}
+	event := TCPEvent{Container: labels, Endpoint: Endpoint{Destination: "10.0.0.1:443"}}
+
+	// Close without a matching open must not drive the gauge negative.
+	st.DecActiveConnection(event)
+	st.IncActiveConnection(event)
+	st.IncActiveConnection(event)
+	st.DecActiveConnection(event)
+	st.DecActiveConnection(event)
+	st.DecActiveConnection(event)
+
+	snap := st.Snapshot()
+	if len(snap.Active) != 1 || snap.Active[0].Value != 0 {
+		t.Fatalf("active gauge must clamp at zero: %#v", snap.Active)
+	}
+}
+
+func TestObserveListenLastWriteWins(t *testing.T) {
+	st := New(config.Default().Store)
+	labels := ContainerLabels{ContainerID: "c1"}
+
+	st.ObserveListen(ListenEndpoint{Container: labels, ListenAddr: "0.0.0.0:8080", Value: 1})
+	st.ObserveListen(ListenEndpoint{Container: labels, ListenAddr: "0.0.0.0:8080", Value: 0})
+
+	snap := st.Snapshot()
+	if len(snap.Listens) != 1 || snap.Listens[0].Value != 0 {
+		t.Fatalf("listens: %#v", snap.Listens)
+	}
+}
+
+func TestIPFQDNIPCardinalityBounded(t *testing.T) {
+	cfg := config.Default().Store
+	cfg.DestinationLimit = 1
+	st := New(cfg)
+	labels := ContainerLabels{ContainerID: "c1"}
+
+	st.SetIPFQDN(IPFQDNMapping{Container: labels, IP: "1.1.1.1", FQDN: "a.example.com", Value: 1})
+	st.SetIPFQDN(IPFQDNMapping{Container: labels, IP: "2.2.2.2", FQDN: "b.example.com", Value: 1})
+
+	snap := st.Snapshot()
+	if len(snap.IPToFQDN) != 2 {
+		t.Fatalf("expected 2 series (one overflow), got %d", len(snap.IPToFQDN))
+	}
+	foundOverflow := false
+	for _, s := range snap.IPToFQDN {
+		if s.IP == overflowLabel {
+			foundOverflow = true
+		}
+	}
+	if !foundOverflow {
+		t.Fatal("expected ~other overflow entry for second answer IP")
+	}
+}
+
+func TestRunJanitorStopsOnContextCancel(t *testing.T) {
+	st := New(config.Default().Store)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		st.RunJanitor(ctx, time.Millisecond, func() map[string]struct{} { return map[string]struct{}{} })
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("janitor did not stop after context cancel")
 	}
 }

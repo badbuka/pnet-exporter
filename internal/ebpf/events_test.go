@@ -156,3 +156,48 @@ func TestDecodeDNSWireEvent(t *testing.T) {
 		t.Fatalf("payload: got %v", event.Payload)
 	}
 }
+
+func TestDestinationIP(t *testing.T) {
+	var tuple SocketTuple
+	tuple.Family = familyIPv4
+	tuple.DestinationAddress[0] = 192
+	tuple.DestinationAddress[1] = 168
+	tuple.DestinationAddress[2] = 1
+	tuple.DestinationAddress[3] = 10
+	if got := tuple.DestinationIP(); got != "192.168.1.10" {
+		t.Fatalf("DestinationIP: got %q", got)
+	}
+
+	tuple.Family = 0 // unknown family
+	if got := tuple.DestinationIP(); got != "" {
+		t.Fatalf("unknown family must yield empty IP, got %q", got)
+	}
+}
+
+func TestToInboundStoreEventUsesRemotePeerAsSource(t *testing.T) {
+	var event TCPEvent
+	event.Tuple.Family = familyIPv4
+	event.Tuple.SourceAddress = [16]byte{10, 0, 0, 5}
+	event.Tuple.SourcePort = 8080
+	event.Tuple.DestinationAddress = [16]byte{203, 0, 113, 7}
+	event.Tuple.DestinationPort = 51234
+	event.Value = 42
+
+	inbound := event.ToInboundStoreEvent(store.ContainerLabels{ContainerID: "c1"})
+	if inbound.Source != "203.0.113.7:51234" {
+		t.Fatalf("source must be the remote peer, got %q", inbound.Source)
+	}
+	if inbound.Bytes != 42 || inbound.Value != 42 {
+		t.Fatalf("bytes/value: got %d/%f", inbound.Bytes, inbound.Value)
+	}
+}
+
+func TestPeekKind(t *testing.T) {
+	if _, ok := PeekKind(nil); ok {
+		t.Fatal("empty buffer must not yield a kind")
+	}
+	kind, ok := PeekKind([]byte{byte(EventL7)})
+	if !ok || kind != EventL7 {
+		t.Fatalf("got %v/%v", kind, ok)
+	}
+}

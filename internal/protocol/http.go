@@ -71,6 +71,13 @@ func ParseHTTPStatus(payload []byte) (string, bool) {
 	if len(parts) < 2 || !strings.HasPrefix(parts[0], "HTTP/") {
 		return "", false
 	}
+	// status-code is exactly 3DIGIT (RFC 9110 section 15). Enforcing the
+	// length keeps arbitrary integers out of the `status` metric label,
+	// which would otherwise be an unbounded cardinality source controlled
+	// by remote servers.
+	if len(parts[1]) != 3 {
+		return "", false
+	}
 	if _, err := strconv.Atoi(parts[1]); err != nil {
 		return "", false
 	}

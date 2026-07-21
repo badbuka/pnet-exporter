@@ -46,15 +46,23 @@ int handle_tcp_retransmit_skb(struct trace_event_raw_tcp_event_sk_skb___pnet *ct
 	event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
 	if (!event)
 		return 0;
+	__builtin_memset(event, 0, sizeof(*event));
 
 	event->kind = PNET_EVENT_TCP_RETRANSMIT;
 	event->cgroup_id = current_cgroup_id();
 	event->pid = bpf_get_current_pid_tgid() >> 32;
 	event->tuple.family = family;
-	event->tuple.sport = bpf_ntohs(sport);
-	event->tuple.dport = bpf_ntohs(dport);
-	__builtin_memcpy(event->tuple.saddr, saddr, sizeof(saddr));
-	__builtin_memcpy(event->tuple.daddr, daddr, sizeof(daddr));
+	/* The tracepoint stores sport/dport in host byte order (since
+	 * kernel 4.19); applying ntohs again would byte-swap them. */
+	event->tuple.sport = sport;
+	event->tuple.dport = dport;
+	if (family == AF_INET6_VALUE) {
+		BPF_CORE_READ_INTO(&event->tuple.saddr, ctx, saddr_v6);
+		BPF_CORE_READ_INTO(&event->tuple.daddr, ctx, daddr_v6);
+	} else {
+		__builtin_memcpy(event->tuple.saddr, saddr, sizeof(saddr));
+		__builtin_memcpy(event->tuple.daddr, daddr, sizeof(daddr));
+	}
 	event->value = 1;
 
 	bpf_ringbuf_submit(event, 0);

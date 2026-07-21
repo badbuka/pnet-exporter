@@ -105,3 +105,18 @@ func TestParseDNSResponseNXDOMAIN(t *testing.T) {
 		t.Fatalf("expected status error, got %q", resp.Status)
 	}
 }
+
+func TestDNSTypeName(t *testing.T) {
+	known := map[uint16]string{
+		1: "A", 28: "AAAA", 5: "CNAME", 15: "MX", 16: "TXT",
+		33: "SRV", 12: "PTR", 2: "NS", 6: "SOA",
+	}
+	for typ, want := range known {
+		if got := dnsTypeName(typ); got != want {
+			t.Errorf("dnsTypeName(%d): got %q, want %q", typ, got, want)
+		}
+	}
+	if got := dnsTypeName(255); got != "TYPE255" {
+		t.Errorf("unknown type must render as TYPE<n>, got %q", got)
+	}
+}

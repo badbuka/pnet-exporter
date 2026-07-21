@@ -58,3 +58,21 @@ func TestLiveContainerIDs(t *testing.T) {
 		t.Fatal("mutating returned map must not affect cache")
 	}
 }
+
+func TestSnapshotReturnsAllContainers(t *testing.T) {
+	c := NewCache(time.Minute)
+	c.Replace([]Container{
+		{ID: "a", PID: 10, CgroupID: 100},
+		{ID: "b", PID: 20, CgroupID: 200},
+	})
+
+	snap := c.Snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("Snapshot: got %d containers, want 2", len(snap))
+	}
+	// Mutating the snapshot must not corrupt the cache index.
+	snap[0].PID = 9999
+	if _, ok := c.ByPID(10); !ok {
+		t.Fatal("cache index corrupted by snapshot mutation")
+	}
+}

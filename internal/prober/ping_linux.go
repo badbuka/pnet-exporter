@@ -23,7 +23,17 @@ func pingFromNetns(pid int, targets []string, timeout time.Duration, baseSeq uin
 	}
 
 	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
+	// unlocked tracks ownership of the thread lock: if the netns restore
+	// below fails, the thread is poisoned (still inside the container
+	// netns) and must NOT be returned to the runtime pool, so the unlock
+	// is skipped and the goroutine exits while locked, which makes the
+	// runtime destroy the thread.
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			runtime.UnlockOSThread()
+		}
+	}()
 
 	currentNS, err := os.Open("/proc/self/ns/net")
 	if err != nil {
@@ -41,7 +51,15 @@ func pingFromNetns(pid int, targets []string, timeout time.Duration, baseSeq uin
 		return nil, err
 	}
 	defer func() {
-		_ = setns(int(currentNS.Fd()))
+		if err := setns(int(currentNS.Fd())); err != nil {
+			// Restore failed: keep the lock and kill this goroutine so the
+			// poisoned thread is destroyed instead of leaking back into
+			// the pool running in the container's netns.
+			unlocked = true
+			runtime.Goexit()
+		}
+		runtime.UnlockOSThread()
+		unlocked = true
 	}()
 
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_ICMP)
@@ -73,8 +91,15 @@ func pingFromNetns(pid int, targets []string, timeout time.Duration, baseSeq uin
 			continue
 		}
 		buf := make([]byte, 1500)
+		// Hard deadline: SO_RCVTIMEO only bounds a single Recvfrom, so a
+		// target streaming wrong-seq replies would otherwise stall the
+		// single-threaded prober past its timeout.
+		deadline := sentAt.Add(timeout)
 		for {
-			n, _, err := unix.Recvfrom(fd, buf, 0)
+			if time.Now().After(deadline) {
+				break
+			}
+			n, from, err := unix.Recvfrom(fd, buf, 0)
 			if err != nil {
 				break
 			}
@@ -82,6 +107,13 @@ func pingFromNetns(pid int, targets []string, timeout time.Duration, baseSeq uin
 				continue
 			}
 			if buf[0] != 0 {
+				continue
+			}
+			// Only accept replies that come from the current target:
+			// anything else (including a spoofed echo-reply from another
+			// host) must not fabricate a latency sample.
+			src, ok := from.(*unix.SockaddrInet4)
+			if !ok || src.Addr != addr.Addr {
 				continue
 			}
 			rseq := binary.BigEndian.Uint16(buf[6:8])

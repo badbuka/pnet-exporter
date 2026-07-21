@@ -183,8 +183,13 @@ func (l *Loader) Close() {
 }
 
 func (l *Loader) consume(ctx context.Context) {
+	// Capture the reader once: Close() nils l.state.reader from another
+	// goroutine, and re-reading the field here would race (and panic on
+	// a nil *ringbuf.Reader). reader.Read returns ErrClosed once Close
+	// closes it, which is this loop's exit signal.
+	reader := l.state.reader
 	for {
-		record, err := l.state.reader.Read()
+		record, err := reader.Read()
 		if err != nil {
 			if errors.Is(err, ringbuf.ErrClosed) || ctx.Err() != nil {
 				return
@@ -262,6 +267,7 @@ func (l *Loader) runCacheJanitor(ctx context.Context) {
 			l.nat.prune(now)
 			l.flows.prune(now)
 			l.urls.prune(now)
+			l.tracker.Prune(now)
 		}
 	}
 }

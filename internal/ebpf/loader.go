@@ -197,9 +197,12 @@ func (l *Loader) dispatchTCP(event TCPEvent) {
 
 	switch event.Kind {
 	case EventTCPListen:
+		// A listening socket has no remote peer: the tracepoint's
+		// destination half is zero. The bind address lives in the
+		// source half of the tuple.
 		l.store.ObserveListen(store.ListenEndpoint{
 			Container:  container,
-			ListenAddr: event.Tuple.Destination(),
+			ListenAddr: event.Tuple.Source(),
 			Proxy:      "false",
 			Value:      1,
 		})

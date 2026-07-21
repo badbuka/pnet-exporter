@@ -28,6 +28,7 @@ const nanosPerSec = 1_000_000_000.0
 // container and writes a per-container delay sample into the store.
 type Reader struct {
 	procRoot string
+	sysRoot  string
 	identity *identity.Cache
 	store    *store.Store
 	logger   *slog.Logger
@@ -36,15 +37,19 @@ type Reader struct {
 
 // NewReader wires up a Reader. interval governs how often the loop
 // fires; 15s is a good default.
-func NewReader(procRoot string, ident *identity.Cache, metricStore *store.Store, interval time.Duration, logger *slog.Logger) *Reader {
+func NewReader(procRoot, sysRoot string, ident *identity.Cache, metricStore *store.Store, interval time.Duration, logger *slog.Logger) *Reader {
 	if procRoot == "" {
 		procRoot = "/proc"
+	}
+	if sysRoot == "" {
+		sysRoot = "/sys"
 	}
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
 	return &Reader{
 		procRoot: procRoot,
+		sysRoot:  sysRoot,
 		identity: ident,
 		store:    metricStore,
 		logger:   logger,
@@ -121,7 +126,7 @@ func (r *Reader) cgroupPIDs(container identity.Container) ([]int, error) {
 	if container.CgroupPath == "" {
 		return nil, nil
 	}
-	path := "/sys/fs/cgroup" + container.CgroupPath + "/cgroup.procs"
+	path := r.sysRoot + "/fs/cgroup" + container.CgroupPath + "/cgroup.procs"
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read cgroup.procs %s: %w", path, err)

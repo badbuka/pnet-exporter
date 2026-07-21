@@ -36,11 +36,24 @@ func TestProtocolCorrelationKafkaRequestResponseMatch(t *testing.T) {
 	}
 }
 
-func TestProtocolCorrelationHTTP(t *testing.T) {
-	payload := []byte("GET /api HTTP/1.1\r\nHost: example\r\n\r\n")
-	got := protocolCorrelation(store.ProtocolHTTP, DirRequest, payload)
-	if got != "http:GET /api" {
-		t.Fatalf("unexpected correlation: %q", got)
+// Non-Kafka protocols have no direction-stable token: responses echo
+// nothing from the request, so both directions must fall back to the
+// destination (the caller substitutes dst on empty).
+func TestProtocolCorrelationNonKafkaFallsBack(t *testing.T) {
+	for _, tc := range []struct {
+		proto   store.Protocol
+		payload []byte
+	}{
+		{store.ProtocolHTTP, []byte("GET /api HTTP/1.1\r\nHost: example\r\n\r\n")},
+		{store.ProtocolPostgres, []byte{'Q', 0, 0, 0, 0}},
+		{store.ProtocolRedis, []byte("GET key\r\n")},
+	} {
+		if got := protocolCorrelation(tc.proto, DirRequest, tc.payload); got != "" {
+			t.Errorf("protocolCorrelation(%s, request): got %q, want empty (dst fallback)", tc.proto, got)
+		}
+		if got := protocolCorrelation(tc.proto, DirResponse, tc.payload); got != "" {
+			t.Errorf("protocolCorrelation(%s, response): got %q, want empty (dst fallback)", tc.proto, got)
+		}
 	}
 }
 
@@ -57,20 +70,6 @@ func TestProtocolStatusRedis(t *testing.T) {
 	}
 	if got := protocolStatus(store.ProtocolRedis, []byte("+OK\r\n")); got != "ok" {
 		t.Fatalf("status: %q", got)
-	}
-}
-
-func TestProtocolCorrelationPostgres(t *testing.T) {
-	payload := []byte{'Q', 0, 0, 0, 0}
-	if got := protocolCorrelation(store.ProtocolPostgres, DirRequest, payload); got != "pg:query" {
-		t.Fatalf("postgres correlation: %q", got)
-	}
-}
-
-func TestProtocolCorrelationRedis(t *testing.T) {
-	payload := []byte("GET key\r\n")
-	if got := protocolCorrelation(store.ProtocolRedis, DirRequest, payload); got != "redis:GET" {
-		t.Fatalf("redis correlation: %q", got)
 	}
 }
 

@@ -65,6 +65,7 @@ type Store struct {
 	fqdnSeen        map[string]map[string]struct{}
 	urlSeen         map[string]map[string]struct{}
 	sourceSeen      map[string]map[string]struct{}
+	ipSeen          map[string]map[string]struct{}
 }
 
 func New(cfg config.StoreConfig) *Store {
@@ -96,6 +97,7 @@ func New(cfg config.StoreConfig) *Store {
 		fqdnSeen:        make(map[string]map[string]struct{}),
 		urlSeen:         make(map[string]map[string]struct{}),
 		sourceSeen:      make(map[string]map[string]struct{}),
+		ipSeen:          make(map[string]map[string]struct{}),
 	}
 }
 
@@ -231,7 +233,10 @@ func (s *Store) SetIPFQDN(mapping IPFQDNMapping) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fqdn := s.boundFQDN(mapping.Container.ContainerID, mapping.FQDN)
-	key := ipFQDNKey{container: mapping.Container, ip: mapping.IP, fqdn: fqdn}
+	// Answer IPs come from remote DNS servers and are unbounded without a
+	// ceiling; reuse the destination budget since both are remote peers.
+	ip := s.boundValue(s.ipSeen, mapping.Container.ContainerID, mapping.IP, s.cfg.DestinationLimit)
+	key := ipFQDNKey{container: mapping.Container, ip: ip, fqdn: fqdn}
 	s.ipToFQDN[key] = seriesValue{value: mapping.Value, updatedAt: time.Now()}
 }
 
@@ -571,6 +576,11 @@ func (s *Store) Prune(now time.Time, liveContainers LiveContainersFunc) {
 	for id := range s.sourceSeen {
 		if dropContainer(id) {
 			delete(s.sourceSeen, id)
+		}
+	}
+	for id := range s.ipSeen {
+		if dropContainer(id) {
+			delete(s.ipSeen, id)
 		}
 	}
 }

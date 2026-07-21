@@ -1,7 +1,6 @@
 package ebpf
 
 import (
-	"fmt"
 	"strconv"
 
 	"pnet-exporter/internal/protocol"
@@ -14,33 +13,20 @@ import (
 // operation. When no protocol-specific token is available the caller
 // substitutes the destination so simple ping-pong flows still correlate.
 //
-// The direction matters for protocols whose request and response frames
-// have different layouts. Kafka is the prime case: a request header carries
+// Only Kafka carries a token that appears in both frames: HTTP, Postgres
+// and Redis responses contain nothing that echoes request data, so any
+// request-derived token would never match its response (leaking tracker
+// entries) and the destination fallback is used on both sides instead.
+//
+// The direction matters for Kafka: a request header carries
 // api_key/api_version before the correlation_id while a response header
 // carries only the correlation_id, so the same token must be read from
 // different offsets on each side.
 func protocolCorrelation(proto store.Protocol, dir Direction, payload []byte) string {
-	switch proto {
-	case store.ProtocolKafka:
+	if proto == store.ProtocolKafka {
 		return kafkaCorrelation(dir, payload)
-	case store.ProtocolHTTP:
-		if request, ok := protocol.ParseHTTPRequest(payload); ok {
-			return fmt.Sprintf("http:%s %s", request.Method, request.Path)
-		}
-		return ""
-	case store.ProtocolPostgres:
-		if msgType, ok := protocol.ParsePostgresMessageType(payload); ok {
-			return "pg:" + msgType
-		}
-		return ""
-	case store.ProtocolRedis:
-		if command, ok := protocol.ParseRedisCommand(payload); ok {
-			return "redis:" + command
-		}
-		return ""
-	default:
-		return ""
 	}
+	return ""
 }
 
 // kafkaCorrelation reads the correlation_id from a Kafka frame using the
